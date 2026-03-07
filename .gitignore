@@ -47,6 +47,8 @@ $RECYCLE.BIN/
 build/
 Build/
 
+logs/
+
 .vs/
 x64/
 vcpkg_installed/
