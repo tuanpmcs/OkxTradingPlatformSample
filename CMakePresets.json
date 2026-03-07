@@ -1,0 +1,152 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "config-base",
+      "hidden": true,
+      "displayName": "Base Configuration",
+      "description": "Base configuration for all platforms",
+      "environment": {
+        "VCPKG_ROOT": "$penv{HOME}/vcpkg"
+      },
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      }
+    },
+    {
+      "name": "config-debug-linux",
+      "displayName": "Config Debug Linux",
+      "description": "Debug build for Linux x64 with Ninja and vcpkg",
+      "inherits": "config-base",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-dynamic"
+      }
+    },
+    {
+      "name": "config-debug-linux-arm",
+      "displayName": "Config Debug Linux ARM",
+      "description": "Debug build for Linux ARM with Ninja and vcpkg",
+      "inherits": "config-base",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux/arm/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "VCPKG_TARGET_TRIPLET": "arm64-linux-dynamic"
+      }
+    },
+    {
+      "name": "config-debug-windows",
+      "displayName": "Config Debug Windows",
+      "description": "Debug build for Windows with Visual Studio 2022 and vcpkg",
+      "inherits": "config-base",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/windows/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "config-debug-osx",
+      "displayName": "Config Debug MacOS",
+      "description": "Debug build for MacOS with Ninja and vcpkg",
+      "inherits": "config-base",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/osx/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_MAKE_PROGRAM": "/opt/homebrew/bin/ninja",
+        "VCPKG_TARGET_TRIPLET": "arm64-osx"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "build-debug-linux",
+      "displayName": "Build Debug Linux",
+      "description": "Build Debug configuration for Linux",
+      "configurePreset": "config-debug-linux"
+    },
+    {
+      "name": "build-debug-linux-arm",
+      "displayName": "Build Debug Linux ARM",
+      "description": "Build Debug configuration for Linux ARM",
+      "configurePreset": "config-debug-linux-arm"
+    },
+    {
+      "name": "build-debug-windows",
+      "displayName": "Build Debug Windows",
+      "description": "Build Debug configuration for Windows",
+      "configurePreset": "config-debug-windows",
+      "configuration": "Debug"
+    },
+    {
+      "name": "build-debug-osx",
+      "configurePreset": "config-debug-osx"
+    }
+  ],
+  "workflowPresets": [
+    {
+      "name": "ci-debug-linux",
+      "displayName": "Workflow Debug Linux",
+      "description": "Configure and build Debug Linux",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "config-debug-linux"
+        },
+        {
+          "type": "build",
+          "name": "build-debug-linux"
+        }
+      ]
+    },
+    {
+      "name": "ci-debug-linux-arm",
+      "displayName": "Workflow Debug Linux ARM",
+      "description": "Configure and build Debug Linux ARM",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "config-debug-linux-arm"
+        },
+        {
+          "type": "build",
+          "name": "build-debug-linux-arm"
+        }
+      ]
+    },
+    {
+      "name": "ci-debug-windows",
+      "displayName": "Workflow Debug Windows",
+      "description": "Configure and build Debug Windows",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "config-debug-windows"
+        },
+        {
+          "type": "build",
+          "name": "build-debug-windows"
+        }
+      ]
+    },
+    {
+      "name": "ci-debug-osx",
+      "displayName": "Workflow Debug MacOS",
+      "description": "Configure and build Debug MacOS",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "config-debug-osx"
+        },
+        {
+          "type": "build",
+          "name": "build-debug-osx"
+        }
+      ]
+    }
+  ]
+}

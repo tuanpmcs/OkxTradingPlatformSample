@@ -1,0 +1,12 @@
+{
+  "dependencies": [
+    "nlohmann-json",
+    "spdlog",
+    "fmt",
+    "boost-beast",
+    "boost-asio",
+    "boost-multiprecision",
+    "openssl",
+    "yaml-cpp"
+  ]
+}
