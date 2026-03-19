@@ -53,6 +53,10 @@
       "displayName": "Config Debug MacOS",
       "description": "Debug build for MacOS with Ninja and vcpkg",
       "inherits": "config-base",
+      "environment": {
+        "CC": "/usr/bin/clang",
+        "CXX": "/usr/bin/clang++"
+      },
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/osx/debug",
       "cacheVariables": {

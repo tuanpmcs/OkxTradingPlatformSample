@@ -5,8 +5,10 @@
     "fmt",
     "boost-beast",
     "boost-asio",
+    "boost-url",
     "boost-multiprecision",
     "openssl",
-    "yaml-cpp"
+    "yaml-cpp",
+    "benchmark"
   ]
 }
