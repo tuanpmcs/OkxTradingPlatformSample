@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package marketstream;
+
+service MarketData {
+  rpc Subscribe(SubscribeRequest) returns (stream Tick);
+}
+
+service PredictionService {
+  rpc Predict(PredictRequest) returns (PredictResponse);
+}
+
+message SubscribeRequest {
+  string symbol = 1;
+  string channel = 2;
+}
+
+message Tick {
+  int64 ts = 1;
+  double price = 2;
+  double change = 3;
+  string source = 4;
+  string raw_json = 5;
+  map<string, string> fields = 6;
+  repeated string changed_fields = 7;
+}
+
+message PricePoint {
+  int64 ts = 1;
+  double price = 2;
+}
+
+message PredictRequest {
+  string symbol = 1;
+  string channel = 2;
+  int32 horizon_sec = 3;
+  repeated PricePoint points = 4;
+}
+
+message PredictResponse {
+  string model_name = 1;
+  string signal = 2;
+  double last_price = 3;
+  double predicted_price = 4;
+  double predicted_return = 5;
+  string detail = 6;
+}

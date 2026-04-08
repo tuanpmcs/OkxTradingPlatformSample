@@ -8,20 +8,27 @@
 #include <boost/beast/websocket.hpp>
 #include <boost/beast/websocket/ssl.hpp>
 #include <boost/multiprecision/cpp_dec_float.hpp>
-#include <nlohmann/json.hpp>
+#include <simdjson.h>
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 #include <array>
+#include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <csignal>
 #include <deque>
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <map>
+#include <mutex>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -30,13 +37,209 @@
 #include <vector>
 
 #include <yaml-cpp/yaml.h>
+#include <grpcpp/grpcpp.h>
+#include "market_data.grpc.pb.h"
 
 namespace net = boost::asio;
 namespace ssl = net::ssl;
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
 using tcp = net::ip::tcp;
-using json = nlohmann::json;
+
+std::atomic<bool> g_should_stop{false};
+
+extern "C" void handle_stop_signal(int)
+{
+	g_should_stop.store(true);
+}
+
+std::string json_escape(std::string_view input)
+{
+	std::string escaped;
+	escaped.reserve(input.size() + 8);
+	for (const char ch : input)
+	{
+		switch (ch)
+		{
+			case '\"':
+				escaped += "\\\"";
+				break;
+			case '\\':
+				escaped += "\\\\";
+				break;
+			case '\b':
+				escaped += "\\b";
+				break;
+			case '\f':
+				escaped += "\\f";
+				break;
+			case '\n':
+				escaped += "\\n";
+				break;
+			case '\r':
+				escaped += "\\r";
+				break;
+			case '\t':
+				escaped += "\\t";
+				break;
+			default:
+				escaped += ch;
+				break;
+		}
+	}
+	return escaped;
+}
+
+struct ParsedTickPayload
+{
+	double							   price{0.0};
+	std::map<std::string, std::string> fields;
+};
+
+std::optional<std::string> get_string_field(const simdjson::dom::element& obj, const char* key)
+{
+	auto value = obj[key].get_string();
+	if (value.error())
+	{
+		return std::nullopt;
+	}
+	return std::string(value.value_unsafe());
+}
+
+void put_if_present(std::map<std::string, std::string>& fields,
+					const simdjson::dom::element& obj,
+					const char*					  key)
+{
+	const auto value = get_string_field(obj, key);
+	if (value.has_value() && !value->empty())
+	{
+		fields[key] = *value;
+	}
+}
+
+std::optional<double> find_price_from_fields(const std::map<std::string, std::string>& fields)
+{
+	for (const char* key : {"last", "lastPr", "px", "price", "markPx"})
+	{
+		const auto it = fields.find(key);
+		if (it == fields.end())
+		{
+			continue;
+		}
+
+		try
+		{
+			const auto parsed_number = std::stod(it->second);
+			if (parsed_number > 0.0)
+			{
+				return parsed_number;
+			}
+		}
+		catch (const std::exception&)
+		{
+		}
+	}
+	return std::nullopt;
+}
+
+std::optional<ParsedTickPayload> parse_okx_tick_payload(const std::string& payload)
+{
+	thread_local simdjson::dom::parser parser;
+	auto parsed = parser.parse(payload);
+	if (parsed.error())
+	{
+		return std::nullopt;
+	}
+
+	ParsedTickPayload result;
+
+	auto arg = parsed["arg"];
+	if (!arg.error())
+	{
+		const auto arg_elem = arg.value_unsafe();
+		put_if_present(result.fields, arg_elem, "channel");
+		put_if_present(result.fields, arg_elem, "instId");
+	}
+
+	auto data = parsed["data"].get_array();
+	if (data.error() || data.value_unsafe().size() == 0)
+	{
+		return std::nullopt;
+	}
+
+	auto first = data.value_unsafe().at(0).value_unsafe();
+	for (const char* key : {"instId",
+							"ts",
+							"tradeId",
+							"side",
+							"seqId",
+							"px",
+							"sz",
+							"last",
+							"lastSz",
+							"lastPr",
+							"bidPx",
+							"bidSz",
+							"askPx",
+							"askSz",
+							"markPx",
+							"indexPx",
+							"open24h",
+							"high24h",
+							"low24h",
+							"vol24h",
+							"volCcy24h"})
+	{
+		put_if_present(result.fields, first, key);
+	}
+
+	auto bids = first["bids"].get_array();
+	if (!bids.error() && bids.value_unsafe().size() > 0)
+	{
+		auto bid0 = bids.value_unsafe().at(0).get_array();
+		if (!bid0.error() && bid0.value_unsafe().size() > 1)
+		{
+			auto px = bid0.value_unsafe().at(0).get_string();
+			auto sz = bid0.value_unsafe().at(1).get_string();
+			if (!px.error())
+			{
+				result.fields["bidPx"] = std::string(px.value_unsafe());
+			}
+			if (!sz.error())
+			{
+				result.fields["bidSz"] = std::string(sz.value_unsafe());
+			}
+		}
+	}
+
+	auto asks = first["asks"].get_array();
+	if (!asks.error() && asks.value_unsafe().size() > 0)
+	{
+		auto ask0 = asks.value_unsafe().at(0).get_array();
+		if (!ask0.error() && ask0.value_unsafe().size() > 1)
+		{
+			auto px = ask0.value_unsafe().at(0).get_string();
+			auto sz = ask0.value_unsafe().at(1).get_string();
+			if (!px.error())
+			{
+				result.fields["askPx"] = std::string(px.value_unsafe());
+			}
+			if (!sz.error())
+			{
+				result.fields["askSz"] = std::string(sz.value_unsafe());
+			}
+		}
+	}
+
+	const auto price = find_price_from_fields(result.fields);
+	if (!price)
+	{
+		return std::nullopt;
+	}
+
+	result.price = *price;
+	return result;
+}
 
 // -------- logger.h --------
 #include <string>
@@ -57,11 +260,23 @@ public:
 		spdlog::level(ss.str()); \
 	} while (0)
 
+#define ENABLE_STREAM_LOGS 1
+
+#ifndef ENABLE_STREAM_LOGS
+#define ENABLE_STREAM_LOGS 0
+#endif
+
+#if ENABLE_STREAM_LOGS
 #define LOG_STREAM_INFO(...)  LOG_STREAM(info, __VA_ARGS__)
 #define LOG_STREAM_ERROR(...) LOG_STREAM(error, __VA_ARGS__)
 #define LOG_STREAM_DEBUG(...) LOG_STREAM(debug, __VA_ARGS__)
 #define LOG_STREAM_WARN(...)  LOG_STREAM(warn, __VA_ARGS__)
-
+#else
+#define LOG_STREAM_INFO(...)
+#define LOG_STREAM_ERROR(...)
+#define LOG_STREAM_DEBUG(...)
+#define LOG_STREAM_WARN(...)
+#endif
 // -------- logger.cpp --------
 // #include "logger.h"
 
@@ -147,9 +362,38 @@ YAML::Node YamlConfig::load_from_string(const std::string_view& config_content)
 
 struct Subscription
 {
-	std::string symbol;
-	std::string channel;
+	std::map<std::string, std::string> args;
 };
+
+std::string build_subscribe_message_json(const std::vector<Subscription>& subs)
+{
+	std::string message = R"({"op":"subscribe","args":[)";
+	for (size_t i = 0; i < subs.size(); ++i)
+	{
+		if (i > 0)
+		{
+			message += ",";
+		}
+		message += "{";
+		size_t field_index = 0;
+		for (const auto& [key, value] : subs[i].args)
+		{
+			if (field_index > 0)
+			{
+				message += ",";
+			}
+			message += "\"";
+			message += json_escape(key);
+			message += "\":\"";
+			message += json_escape(value);
+			message += "\"";
+			++field_index;
+		}
+		message += "}";
+	}
+	message += "]}";
+	return message;
+}
 
 struct WebSocketEndpoint
 {
@@ -222,9 +466,22 @@ T get_required(const YAML::Node& node, const std::string& key)
 Subscription parse_subscription(const YAML::Node& node)
 {
 	Subscription sub;
+	if (!node.IsMap())
+	{
+		throw std::runtime_error("Subscription entry must be a map/object.");
+	}
 
-	sub.symbol = get_required<std::string>(node, "symbol");
-	sub.channel = get_required<std::string>(node, "channel");
+	for (const auto& item : node)
+	{
+		const auto key = item.first.as<std::string>();
+		const auto value = item.second.as<std::string>();
+		sub.args[key] = value;
+	}
+
+	if (sub.args.find("channel") == sub.args.end())
+	{
+		throw std::runtime_error("Subscription entry is missing required key: channel");
+	}
 
 	return sub;
 }
@@ -647,42 +904,330 @@ bool TlsClient::is_open() const noexcept
 	return _ws_stream && _ws_stream->is_open();
 }
 
+struct TickEvent
+{
+	std::int64_t ts_ms{0};
+	double		 price{0.0};
+	double		 change{0.0};
+	std::string	 source;
+	std::map<std::string, std::string> fields;
+	std::vector<std::string>			  changed_fields;
+};
+
+class GrpcTickHub
+{
+public:
+	struct Subscriber
+	{
+		std::mutex				 mutex;
+		std::condition_variable cv;
+		std::deque<TickEvent>	 queue;
+		bool					 closed{false};
+
+		bool wait_pop(TickEvent& event, std::chrono::milliseconds timeout)
+		{
+			std::unique_lock<std::mutex> lock(mutex);
+			cv.wait_for(lock, timeout, [this]() {
+				return closed || !queue.empty();
+			});
+
+			if (queue.empty())
+			{
+				return false;
+			}
+
+			event = std::move(queue.front());
+			queue.pop_front();
+			return true;
+		}
+	};
+
+public:
+	std::shared_ptr<Subscriber> add_subscriber()
+	{
+		auto subscriber = std::make_shared<Subscriber>();
+		std::lock_guard<std::mutex> lock(_mutex);
+		_subscribers.push_back(subscriber);
+		return subscriber;
+	}
+
+	void remove_subscriber(const std::shared_ptr<Subscriber>& target)
+	{
+		std::lock_guard<std::mutex> lock(_mutex);
+		_subscribers.erase(
+				std::remove(_subscribers.begin(), _subscribers.end(), target),
+				_subscribers.end());
+	}
+
+	void broadcast(const TickEvent& event)
+	{
+		std::vector<std::shared_ptr<Subscriber>> snapshot;
+		{
+			std::lock_guard<std::mutex> lock(_mutex);
+			snapshot = _subscribers;
+		}
+
+		for (auto& subscriber : snapshot)
+		{
+			{
+				std::lock_guard<std::mutex> lock(subscriber->mutex);
+				subscriber->queue.push_back(event);
+				if (subscriber->queue.size() > 1024)
+				{
+					subscriber->queue.pop_front();
+				}
+			}
+			subscriber->cv.notify_one();
+		}
+	}
+
+	void shutdown()
+	{
+		std::vector<std::shared_ptr<Subscriber>> snapshot;
+		{
+			std::lock_guard<std::mutex> lock(_mutex);
+			snapshot = _subscribers;
+			_subscribers.clear();
+		}
+
+		for (auto& subscriber : snapshot)
+		{
+			{
+				std::lock_guard<std::mutex> lock(subscriber->mutex);
+				subscriber->closed = true;
+			}
+			subscriber->cv.notify_all();
+		}
+	}
+
+private:
+	std::mutex									_mutex;
+	std::vector<std::shared_ptr<Subscriber>> _subscribers;
+};
+
+class MarketDataServiceImpl final : public marketstream::MarketData::Service
+{
+public:
+	explicit MarketDataServiceImpl(GrpcTickHub& hub)
+		  : _hub(hub)
+	{
+	}
+
+	grpc::Status Subscribe(grpc::ServerContext* context,
+						   const marketstream::SubscribeRequest* request,
+						   grpc::ServerWriter<marketstream::Tick>* writer) override
+	{
+		auto subscriber = _hub.add_subscriber();
+		const std::string requested_channel = request ? request->channel() : "";
+		const std::string requested_symbol = request ? request->symbol() : "";
+
+		while (!context->IsCancelled())
+		{
+			TickEvent event;
+			if (!subscriber->wait_pop(event, std::chrono::milliseconds(250)))
+			{
+				continue;
+			}
+
+			if (!requested_channel.empty())
+			{
+				const auto it = event.fields.find("channel");
+				if (it == event.fields.end() || it->second != requested_channel)
+				{
+					continue;
+				}
+			}
+
+			if (!requested_symbol.empty())
+			{
+				const auto it = event.fields.find("instId");
+				if (it == event.fields.end() || it->second != requested_symbol)
+				{
+					continue;
+				}
+			}
+
+			marketstream::Tick tick;
+			tick.set_ts(event.ts_ms);
+			tick.set_price(event.price);
+			tick.set_change(event.change);
+			tick.set_source(event.source);
+			for (const auto& [k, v] : event.fields)
+			{
+				(*tick.mutable_fields())[k] = v;
+			}
+			for (const auto& field_name : event.changed_fields)
+			{
+				tick.add_changed_fields(field_name);
+			}
+
+			if (!writer->Write(tick))
+			{
+				break;
+			}
+		}
+
+		_hub.remove_subscriber(subscriber);
+		return grpc::Status::OK;
+	}
+
+private:
+	GrpcTickHub& _hub;
+};
+
+class GrpcServerRuntime
+{
+public:
+	GrpcServerRuntime(MarketDataServiceImpl& service, unsigned short port)
+		  : _service(service), _port(port)
+	{
+	}
+
+	~GrpcServerRuntime()
+	{
+		stop();
+	}
+
+	void start()
+	{
+		grpc::ServerBuilder builder;
+		const std::string address = "127.0.0.1:" + std::to_string(_port);
+		builder.AddListeningPort(address, grpc::InsecureServerCredentials());
+		builder.RegisterService(&_service);
+		_server = builder.BuildAndStart();
+		if (!_server)
+		{
+			throw std::runtime_error("Failed to start gRPC server on " + address);
+		}
+
+		_thread = std::thread([this]() {
+			_server->Wait();
+		});
+	}
+
+	void stop()
+	{
+		if (_stopped)
+		{
+			return;
+		}
+		_stopped = true;
+
+		if (_server)
+		{
+			_server->Shutdown();
+		}
+
+		if (_thread.joinable())
+		{
+			_thread.join();
+		}
+	}
+
+private:
+	MarketDataServiceImpl&		 _service;
+	unsigned short				 _port;
+	std::unique_ptr<grpc::Server> _server;
+	std::thread					 _thread;
+	bool						 _stopped{false};
+};
+
 #include <boost/url.hpp>
 
 int main(int argc, char* argv[])
 {
 	bool bench_main_mode = false;
+	unsigned short grpc_port = 50051;
+	bool grpc_enabled = true;
+	std::string override_symbol;
+	std::string override_channel;
 	for (int i = 1; i < argc; ++i)
 	{
-		if (std::string_view(argv[i]) == "--bench-main")
+		const std::string_view arg(argv[i]);
+		if (arg == "--bench-main")
 		{
 			bench_main_mode = true;
+		}
+		else if (arg == "--grpc-port" && i + 1 < argc)
+		{
+			try
+			{
+				const int parsed = std::stoi(argv[++i]);
+				if (parsed < 1 || parsed > 65535)
+				{
+					throw std::out_of_range("grpc port out of range");
+				}
+				grpc_port = static_cast<unsigned short>(parsed);
+			}
+			catch (const std::exception&)
+			{
+				std::cerr << "Invalid --grpc-port value. Expected 1..65535.\n";
+				return 1;
+			}
+		}
+		else if (arg == "--disable-grpc")
+		{
+			grpc_enabled = false;
+		}
+		else if (arg == "--symbol" && i + 1 < argc)
+		{
+			override_symbol = argv[++i];
+		}
+		else if (arg == "--channel" && i + 1 < argc)
+		{
+			override_channel = argv[++i];
 		}
 	}
 
 	Logger::init_console();
+	std::signal(SIGINT, handle_stop_signal);
+	std::signal(SIGTERM, handle_stop_signal);
 
-	std::string config_content = R"(
+std::string config_content = R"(
 exchange: "okx"
 
 network:
     forced_ip: ""
-    reconnect_ms: 100
-    ping_interval_ms: 100
-    stale_timeout_ms: 100
-    pong_timeout_ms: 100
+    reconnect_ms: 5000
+    ping_interval_ms: 15000
+    stale_timeout_ms: 1000
+    pong_timeout_ms: 5000
 
 websocket_endpoint:
     public_endpoint:
-        ws_url: "wss://wspap.okx.com:8443/ws/v5/public"
+        ws_url: "wss://ws.okx.com:8443/ws/v5/public"
         subscriptions:
-            - symbol: "BTC-USDT"
+            - instId: "BTC-USDT"
+              channel: "bbo-tbt"
+            - instId: "BTC-USDT"
+              channel: "books5"
+            - instId: "BTC-USDT"
+              channel: "books"
+            - instId: "BTC-USDT"
               channel: "tickers"
+            - instId: "BTC-USDT"
+              channel: "trades"
+            - instId: "BTC-USDT"
+              channel: "candle1m"
+
+            # Derivatives-focused public channels
+            - instId: "BTC-USDT-SWAP"
+              channel: "mark-price"
+            - instId: "BTC-USDT-SWAP"
+              channel: "index-tickers"
+            - instId: "BTC-USDT-SWAP"
+              channel: "open-interest"
+            - instId: "BTC-USDT-SWAP"
+              channel: "funding-rate"
+            - instId: "BTC-USDT-SWAP"
+              channel: "estimated-price"
+            - instType: "SWAP"
+              channel: "liquidation-orders"
 
     business_endpoint:
-        ws_url: "wss://wspap.okx.com:8443/ws/v5/business"
+        ws_url: "wss://ws.okx.com:8443/ws/v5/business"
         subscriptions:
-            - symbol: "BTC-USDT"
+            - instId: "BTC-USDT"
               channel: "trades-all"
 )";
 
@@ -696,6 +1241,22 @@ websocket_endpoint:
 	}
 
 	auto okx_config = from(config);
+	if (!override_symbol.empty() || !override_channel.empty())
+	{
+		if (!okx_config.websocket_endpoint.public_endpoint)
+		{
+			LOG_STREAM_ERROR("Cannot apply --symbol/--channel because public endpoint is missing.");
+			return 1;
+		}
+
+		Subscription sub;
+		sub.args["instId"] = override_symbol.empty() ? "BTC-USDT" : override_symbol;
+		sub.args["channel"] = override_channel.empty() ? "books5" : override_channel;
+		okx_config.websocket_endpoint.public_endpoint->subscriptions = {sub};
+
+		LOG_STREAM_INFO("Override subscription: channel=" << sub.args["channel"]
+														 << ", instId=" << sub.args["instId"]);
+	}
 
 	if (!okx_config.websocket_endpoint.public_endpoint)
 	{
@@ -726,24 +1287,30 @@ websocket_endpoint:
 		return 1;
 	}
 
-	json args = json::array();
-	for (const auto& sub : subs)
-	{
-		args.push_back({
-				{"channel", sub.channel},
-				{"instId", sub.symbol},
-		});
-	}
-
-	json subscribe_msg = {
-			{"op", "subscribe"},
-			{"args", args},
-	};
+	const std::string subscribe_msg = build_subscribe_message_json(subs);
 
 	if (bench_main_mode)
 	{
 		(void)subscribe_msg;
 		return 0;
+	}
+
+	GrpcTickHub					 grpc_hub;
+	MarketDataServiceImpl		 grpc_service(grpc_hub);
+	std::unique_ptr<GrpcServerRuntime> grpc_server;
+	if (grpc_enabled)
+	{
+		try
+		{
+			grpc_server = std::make_unique<GrpcServerRuntime>(grpc_service, grpc_port);
+			grpc_server->start();
+			LOG_STREAM_INFO("gRPC stream server listening on 127.0.0.1:" << grpc_port);
+		}
+		catch (const std::exception& e)
+		{
+			LOG_STREAM_ERROR("Failed to start gRPC server: " << e.what());
+			return 1;
+		}
 	}
 
 	TlsClient tls_client;
@@ -761,7 +1328,7 @@ websocket_endpoint:
 		return 1;
 	}
 
-	auto write_result = tls_client.write(subscribe_msg.dump(), okx_config.network.reconnect_ms);
+	auto write_result = tls_client.write(subscribe_msg, okx_config.network.reconnect_ms);
 	if (!write_result.ok())
 	{
 		LOG_STREAM_ERROR("Failed to send subscribe message: " << write_result.message);
@@ -777,8 +1344,10 @@ websocket_endpoint:
 	auto last_rx_time = clock::now();
 	auto last_ping_time = clock::time_point::min();
 	bool waiting_pong = false;
+	std::optional<double> last_price;
+	std::map<std::string, std::string> previous_fields;
 
-	while (tls_client.is_open())
+	while (tls_client.is_open() && !g_should_stop.load())
 	{
 		std::string response;
 		auto		read_result = tls_client.read(response, okx_config.network.stale_timeout_ms);
@@ -799,9 +1368,63 @@ websocket_endpoint:
 		}
 
 		LOG_STREAM_INFO("Stream: " << response);
+
+		if (grpc_server)
+		{
+			const auto parsed = parse_okx_tick_payload(response);
+			if (parsed)
+			{
+				const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
+									 std::chrono::system_clock::now())
+									 .time_since_epoch()
+									 .count();
+
+				TickEvent tick;
+				tick.ts_ms = static_cast<std::int64_t>(now);
+				tick.price = parsed->price;
+				tick.change = last_price.has_value() ? (parsed->price - *last_price) : 0.0;
+				tick.source = "cxx-grpc";
+				tick.fields = parsed->fields;
+
+				for (const auto& [k, v] : tick.fields)
+				{
+					const auto it = previous_fields.find(k);
+					if (it == previous_fields.end() || it->second != v)
+					{
+						tick.changed_fields.push_back(k);
+					}
+				}
+				for (const auto& [k, _] : previous_fields)
+				{
+					if (tick.fields.find(k) == tick.fields.end())
+					{
+						tick.changed_fields.push_back(k);
+					}
+				}
+
+				previous_fields = tick.fields;
+				last_price = parsed->price;
+
+				grpc_hub.broadcast(tick);
+			}
+		}
 	}
 
-	LOG_STREAM_INFO("Logger initialized successfully.");
+	if (g_should_stop.load())
+	{
+		LOG_STREAM_INFO("Stop signal received. Shutting down gracefully...");
+	}
+
+	if (tls_client.is_open())
+	{
+		(void)tls_client.close(2000);
+	}
+
+	grpc_hub.shutdown();
+	if (grpc_server)
+	{
+		grpc_server->stop();
+	}
 
 	return 0;
 }

@@ -1,6 +1,8 @@
 {
   "dependencies": [
-    "nlohmann-json",
+    "grpc",
+    "protobuf",
+    "simdjson",
     "spdlog",
     "fmt",
     "boost-beast",

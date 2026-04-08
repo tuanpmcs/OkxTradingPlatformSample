@@ -46,9 +46,48 @@ $RECYCLE.BIN/
 # Makefile generated files
 build/
 Build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
 
 logs/
+*.log
+*.tmp
+*.pid
 
 .vs/
+.vscode/
 x64/
 vcpkg_installed/
+
+# Node / Electron
+desktop/node_modules/
+desktop/.npm/
+desktop/dist/
+desktop/.cache/
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ML pipeline artifacts
+ml_pipeline/.venv/
+ml_pipeline/_generated/
+ml_pipeline/__pycache__/
+
+# Data / model artifacts
+data/
+models/
+*.joblib
+*.pt
+*.pth
+*.onnx
+*.csv

@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pulse Desk</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="bg-orb bg-orb-a"></div>
+    <div class="bg-orb bg-orb-b"></div>
+    <main class="app-shell">
+      <header class="topbar slide-up">
+        <div>
+          <p class="eyebrow">Live stream desktop terminal</p>
+          <h1>Pulse Desk</h1>
+        </div>
+        <div id="status-pill" class="status-pill status-idle">Idle</div>
+      </header>
+
+      <section class="controls card slide-up delay-1">
+        <div class="subs-editor">
+          <div class="subs-head">
+            <span>Subscriptions</span>
+            <button id="add-row-btn" class="btn btn-ghost btn-sm" type="button">Add Row</button>
+          </div>
+          <div id="subscription-rows" class="subscription-rows"></div>
+        </div>
+        <label>
+          URL
+          <input id="url-input" value="grpc://127.0.0.1:50051" />
+        </label>
+        <div class="control-actions">
+          <button id="connect-btn" class="btn btn-primary">Connect Stream</button>
+          <button id="simulate-btn" class="btn btn-secondary">Use Simulated</button>
+          <button id="stop-btn" class="btn btn-ghost">Stop</button>
+        </div>
+      </section>
+
+      <section class="card chart-card slide-up delay-3">
+        <div class="chart-head">
+          <p id="status-text">Waiting to connect...</p>
+        </div>
+      </section>
+
+      <div class="dual-charts slide-up delay-3">
+        <section class="card chart-card">
+          <div class="chart-head">
+            <p>Market Chart</p>
+          </div>
+          <div id="tv-chart-root" class="tv-chart-root"></div>
+        </section>
+
+        <section class="card chart-card">
+          <div class="chart-head">
+            <p>gRPC Stream Chart (Local Data)</p>
+            <p id="grpc-chart-meta">Waiting for gRPC data...</p>
+          </div>
+          <div class="grpc-chart-wrap">
+            <canvas id="grpc-chart-canvas"></canvas>
+          </div>
+        </section>
+      </div>
+
+      <section class="stats-grid slide-up delay-2">
+        <article class="card stat">
+          <p>Latest Price</p>
+          <h2 id="latest-price">-</h2>
+        </article>
+        <article class="card stat">
+          <p>Best Bid</p>
+          <h2 id="best-bid">-</h2>
+        </article>
+        <article class="card stat">
+          <p>Best Ask</p>
+          <h2 id="best-ask">-</h2>
+        </article>
+        <article class="card stat">
+          <p>24h Volume</p>
+          <h2 id="vol-24h">-</h2>
+        </article>
+        <article class="card stat">
+          <p>24h High</p>
+          <h2 id="high-24h">-</h2>
+        </article>
+        <article class="card stat">
+          <p>24h Low</p>
+          <h2 id="low-24h">-</h2>
+        </article>
+        <article class="card stat">
+          <p>Messages / Sec</p>
+          <h2 id="msg-rate">0.00</h2>
+        </article>
+        <article class="card stat">
+          <p>Source</p>
+          <h2 id="source-text">-</h2>
+        </article>
+        <article class="card stat">
+          <p>Latest Channel</p>
+          <h2 id="changed-fields">-</h2>
+        </article>
+      </section>
+
+      <section class="card sim-card slide-up delay-3">
+        <div class="chart-head">
+          <p>Prediction + Trade Simulator (Prebuilt Model)</p>
+        </div>
+        <div class="sim-grid">
+          <label>
+            Account Balance (USD)
+            <input id="sim-account-input" type="text" inputmode="decimal" value="20,000" />
+          </label>
+          <label>
+            Capital (USD)
+            <input id="sim-capital-input" type="text" inputmode="decimal" value="5,000" />
+          </label>
+          <label>
+            Horizon (sec)
+            <input id="sim-horizon-input" type="number" min="1" step="1" value="30" />
+          </label>
+          <label>
+            Auto Range (sec)
+            <input id="sim-range-input" type="number" min="10" step="1" value="60" />
+          </label>
+          <button id="sim-infer-btn" class="btn btn-secondary">Run Inference</button>
+          <button id="sim-open-btn" class="btn btn-primary">Predict + Buy</button>
+          <button id="sim-close-btn" class="btn btn-ghost">Sell Now</button>
+          <button id="sim-auto-start-btn" class="btn btn-primary">Start Auto</button>
+          <button id="sim-auto-stop-btn" class="btn btn-ghost">Stop Auto</button>
+          <button id="sim-account-reset-btn" class="btn btn-ghost">Reset Account</button>
+        </div>
+        <div id="sim-summary" class="sim-summary">No prediction yet.</div>
+        <div class="sim-metrics">
+          <article class="card stat">
+            <p>Model Signal</p>
+            <h2 id="sim-signal">-</h2>
+          </article>
+          <article class="card stat">
+            <p>Predicted Price</p>
+            <h2 id="sim-pred-price">-</h2>
+          </article>
+          <article class="card stat">
+            <p>Expected PnL</p>
+            <h2 id="sim-exp-pnl">-</h2>
+          </article>
+          <article class="card stat">
+            <p>Live PnL</p>
+            <h2 id="sim-live-pnl">-</h2>
+          </article>
+          <article class="card stat">
+            <p>Live Equity</p>
+            <h2 id="sim-live-equity">-</h2>
+          </article>
+          <article class="card stat">
+            <p>Position</p>
+            <h2 id="sim-position">-</h2>
+          </article>
+          <article class="card stat">
+            <p>Session Profit</p>
+            <h2 id="sim-total-pnl">-</h2>
+          </article>
+          <article class="card stat">
+            <p>Session Trades</p>
+            <h2 id="sim-trade-count">0</h2>
+          </article>
+          <article class="card stat">
+            <p>Account Cash</p>
+            <h2 id="sim-account-cash">-</h2>
+          </article>
+          <article class="card stat">
+            <p>Account Equity</p>
+            <h2 id="sim-account-equity">-</h2>
+          </article>
+          <article class="card stat">
+            <p>Account Action</p>
+            <h2 id="sim-account-action">-</h2>
+          </article>
+        </div>
+      </section>
+
+      <section class="card chart-card slide-up delay-3">
+        <div class="chart-head">
+          <p>Changes By Channel</p>
+        </div>
+        <div id="channel-change-list" class="channel-change-list">No channel updates yet.</div>
+      </section>
+
+    </main>
+
+    <script src="chart-widget.js"></script>
+    <script src="renderer.js"></script>
+  </body>
+</html>
