@@ -1,3 +1,5 @@
+#include "market_data.grpc.pb.h"
+
 #include <boost/asio.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/post.hpp>
@@ -8,23 +10,24 @@
 #include <boost/beast/websocket.hpp>
 #include <boost/beast/websocket/ssl.hpp>
 #include <boost/multiprecision/cpp_dec_float.hpp>
+#include <grpcpp/grpcpp.h>
 #include <simdjson.h>
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
-#include <array>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <cstdint>
 #include <csignal>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <iostream>
-#include <memory>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -37,8 +40,6 @@
 #include <vector>
 
 #include <yaml-cpp/yaml.h>
-#include <grpcpp/grpcpp.h>
-#include "market_data.grpc.pb.h"
 
 namespace net = boost::asio;
 namespace ssl = net::ssl;
@@ -61,30 +62,30 @@ std::string json_escape(std::string_view input)
 	{
 		switch (ch)
 		{
-			case '\"':
-				escaped += "\\\"";
-				break;
-			case '\\':
-				escaped += "\\\\";
-				break;
-			case '\b':
-				escaped += "\\b";
-				break;
-			case '\f':
-				escaped += "\\f";
-				break;
-			case '\n':
-				escaped += "\\n";
-				break;
-			case '\r':
-				escaped += "\\r";
-				break;
-			case '\t':
-				escaped += "\\t";
-				break;
-			default:
-				escaped += ch;
-				break;
+		case '\"':
+			escaped += "\\\"";
+			break;
+		case '\\':
+			escaped += "\\\\";
+			break;
+		case '\b':
+			escaped += "\\b";
+			break;
+		case '\f':
+			escaped += "\\f";
+			break;
+		case '\n':
+			escaped += "\\n";
+			break;
+		case '\r':
+			escaped += "\\r";
+			break;
+		case '\t':
+			escaped += "\\t";
+			break;
+		default:
+			escaped += ch;
+			break;
 		}
 	}
 	return escaped;
@@ -107,8 +108,8 @@ std::optional<std::string> get_string_field(const simdjson::dom::element& obj, c
 }
 
 void put_if_present(std::map<std::string, std::string>& fields,
-					const simdjson::dom::element& obj,
-					const char*					  key)
+					const simdjson::dom::element&		obj,
+					const char*							key)
 {
 	const auto value = get_string_field(obj, key);
 	if (value.has_value() && !value->empty())
@@ -119,7 +120,7 @@ void put_if_present(std::map<std::string, std::string>& fields,
 
 std::optional<double> find_price_from_fields(const std::map<std::string, std::string>& fields)
 {
-	for (const char* key : {"last", "lastPr", "px", "price", "markPx"})
+	for (const char* key : {"last", "lastPr", "px", "price", "markPx", "bidPx", "askPx"})
 	{
 		const auto it = fields.find(key);
 		if (it == fields.end())
@@ -139,13 +140,31 @@ std::optional<double> find_price_from_fields(const std::map<std::string, std::st
 		{
 		}
 	}
+
+	const auto bid_it = fields.find("bidPx");
+	const auto ask_it = fields.find("askPx");
+	if (bid_it != fields.end() && ask_it != fields.end())
+	{
+		try
+		{
+			const auto bid = std::stod(bid_it->second);
+			const auto ask = std::stod(ask_it->second);
+			if (bid > 0.0 && ask > 0.0)
+			{
+				return 0.5 * (bid + ask);
+			}
+		}
+		catch (const std::exception&)
+		{
+		}
+	}
 	return std::nullopt;
 }
 
 std::optional<ParsedTickPayload> parse_okx_tick_payload(const std::string& payload)
 {
 	thread_local simdjson::dom::parser parser;
-	auto parsed = parser.parse(payload);
+	auto							   parsed = parser.parse(payload);
 	if (parsed.error())
 	{
 		return std::nullopt;
@@ -280,10 +299,10 @@ public:
 // -------- logger.cpp --------
 // #include "logger.h"
 
+#include <spdlog/async.h>
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
-#include <spdlog/async.h>
 
 void Logger::init_file(const std::string& log_file, size_t max_size, size_t max_files)
 {
@@ -295,20 +314,19 @@ void Logger::init_file(const std::string& log_file, size_t max_size, size_t max_
 void Logger::init_console()
 {
 	spdlog::init_thread_pool(
-		8192, // queue size
-		2     // number of threads
+			8192,  // queue size
+			2	   // number of threads
 	);
 
 	auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
 	auto logger = std::make_shared<spdlog::async_logger>(
-        "async_logger",
-        console_sink,
-		spdlog::thread_pool(),
-		spdlog::async_overflow_policy::block
-		);
+			"async_logger",
+			console_sink,
+			spdlog::thread_pool(),
+			spdlog::async_overflow_policy::block);
 
-    spdlog::register_logger(logger);
-    spdlog::set_default_logger(logger);
+	spdlog::register_logger(logger);
+	spdlog::set_default_logger(logger);
 	spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v");
 }
 
@@ -397,7 +415,7 @@ std::string build_subscribe_message_json(const std::vector<Subscription>& subs)
 
 struct WebSocketEndpoint
 {
-	std::string ws_url;
+	std::string				  ws_url;
 	std::vector<Subscription> subscriptions;
 };
 
@@ -906,12 +924,12 @@ bool TlsClient::is_open() const noexcept
 
 struct TickEvent
 {
-	std::int64_t ts_ms{0};
-	double		 price{0.0};
-	double		 change{0.0};
-	std::string	 source;
+	std::int64_t					   ts_ms{0};
+	double							   price{0.0};
+	double							   change{0.0};
+	std::string						   source;
 	std::map<std::string, std::string> fields;
-	std::vector<std::string>			  changed_fields;
+	std::vector<std::string>		   changed_fields;
 };
 
 class GrpcTickHub
@@ -919,10 +937,10 @@ class GrpcTickHub
 public:
 	struct Subscriber
 	{
-		std::mutex				 mutex;
+		std::mutex				mutex;
 		std::condition_variable cv;
-		std::deque<TickEvent>	 queue;
-		bool					 closed{false};
+		std::deque<TickEvent>	queue;
+		bool					closed{false};
 
 		bool wait_pop(TickEvent& event, std::chrono::milliseconds timeout)
 		{
@@ -945,7 +963,7 @@ public:
 public:
 	std::shared_ptr<Subscriber> add_subscriber()
 	{
-		auto subscriber = std::make_shared<Subscriber>();
+		auto						subscriber = std::make_shared<Subscriber>();
 		std::lock_guard<std::mutex> lock(_mutex);
 		_subscribers.push_back(subscriber);
 		return subscriber;
@@ -1001,7 +1019,7 @@ public:
 	}
 
 private:
-	std::mutex									_mutex;
+	std::mutex								 _mutex;
 	std::vector<std::shared_ptr<Subscriber>> _subscribers;
 };
 
@@ -1013,11 +1031,11 @@ public:
 	{
 	}
 
-	grpc::Status Subscribe(grpc::ServerContext* context,
-						   const marketstream::SubscribeRequest* request,
+	grpc::Status Subscribe(grpc::ServerContext*					   context,
+						   const marketstream::SubscribeRequest*   request,
 						   grpc::ServerWriter<marketstream::Tick>* writer) override
 	{
-		auto subscriber = _hub.add_subscriber();
+		auto			  subscriber = _hub.add_subscriber();
 		const std::string requested_channel = request ? request->channel() : "";
 		const std::string requested_symbol = request ? request->symbol() : "";
 
@@ -1091,7 +1109,7 @@ public:
 	void start()
 	{
 		grpc::ServerBuilder builder;
-		const std::string address = "127.0.0.1:" + std::to_string(_port);
+		const std::string	address = "127.0.0.1:" + std::to_string(_port);
 		builder.AddListeningPort(address, grpc::InsecureServerCredentials());
 		builder.RegisterService(&_service);
 		_server = builder.BuildAndStart();
@@ -1125,22 +1143,22 @@ public:
 	}
 
 private:
-	MarketDataServiceImpl&		 _service;
-	unsigned short				 _port;
+	MarketDataServiceImpl&		  _service;
+	unsigned short				  _port;
 	std::unique_ptr<grpc::Server> _server;
-	std::thread					 _thread;
-	bool						 _stopped{false};
+	std::thread					  _thread;
+	bool						  _stopped{false};
 };
 
 #include <boost/url.hpp>
 
 int main(int argc, char* argv[])
 {
-	bool bench_main_mode = false;
+	bool		   bench_main_mode = false;
 	unsigned short grpc_port = 50051;
-	bool grpc_enabled = true;
-	std::string override_symbol;
-	std::string override_channel;
+	bool		   grpc_enabled = true;
+	std::string	   override_symbol;
+	std::string	   override_channel;
 	for (int i = 1; i < argc; ++i)
 	{
 		const std::string_view arg(argv[i]);
@@ -1183,7 +1201,7 @@ int main(int argc, char* argv[])
 	std::signal(SIGINT, handle_stop_signal);
 	std::signal(SIGTERM, handle_stop_signal);
 
-std::string config_content = R"(
+	std::string config_content = R"(
 exchange: "okx"
 
 network:
@@ -1255,7 +1273,7 @@ websocket_endpoint:
 		okx_config.websocket_endpoint.public_endpoint->subscriptions = {sub};
 
 		LOG_STREAM_INFO("Override subscription: channel=" << sub.args["channel"]
-														 << ", instId=" << sub.args["instId"]);
+														  << ", instId=" << sub.args["instId"]);
 	}
 
 	if (!okx_config.websocket_endpoint.public_endpoint)
@@ -1295,8 +1313,8 @@ websocket_endpoint:
 		return 0;
 	}
 
-	GrpcTickHub					 grpc_hub;
-	MarketDataServiceImpl		 grpc_service(grpc_hub);
+	GrpcTickHub						   grpc_hub;
+	MarketDataServiceImpl			   grpc_service(grpc_hub);
 	std::unique_ptr<GrpcServerRuntime> grpc_server;
 	if (grpc_enabled)
 	{
@@ -1341,10 +1359,10 @@ websocket_endpoint:
 	const auto ping_interval = std::chrono::milliseconds(okx_config.network.ping_interval_ms);
 	const auto pong_timeout = std::chrono::milliseconds(okx_config.network.pong_timeout_ms);
 
-	auto last_rx_time = clock::now();
-	auto last_ping_time = clock::time_point::min();
-	bool waiting_pong = false;
-	std::optional<double> last_price;
+	auto							   last_rx_time = clock::now();
+	auto							   last_ping_time = clock::time_point::min();
+	bool							   waiting_pong = false;
+	std::optional<double>			   last_price;
 	std::map<std::string, std::string> previous_fields;
 
 	while (tls_client.is_open() && !g_should_stop.load())
@@ -1375,9 +1393,9 @@ websocket_endpoint:
 			if (parsed)
 			{
 				const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
-									 std::chrono::system_clock::now())
-									 .time_since_epoch()
-									 .count();
+										 std::chrono::system_clock::now())
+										 .time_since_epoch()
+										 .count();
 
 				TickEvent tick;
 				tick.ts_ms = static_cast<std::int64_t>(now);

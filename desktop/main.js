@@ -348,7 +348,11 @@ function inferPredictionGrpc(payload) {
         ? payload.points
           .map((p) => ({
             ts: Number.isFinite(Number(p?.ts)) ? Number(p.ts) : Date.now(),
-            price: Number(p?.price)
+            price: Number(p?.price),
+            bid_px: Number.isFinite(Number(p?.bidPx)) ? Number(p.bidPx) : 0,
+            ask_px: Number.isFinite(Number(p?.askPx)) ? Number(p.askPx) : 0,
+            bid_sz: Number.isFinite(Number(p?.bidSz)) ? Number(p.bidSz) : 0,
+            ask_sz: Number.isFinite(Number(p?.askSz)) ? Number(p.askSz) : 0
           }))
           .filter((p) => Number.isFinite(p.price) && p.price > 0)
         : [];
@@ -357,6 +361,26 @@ function inferPredictionGrpc(payload) {
         symbol: String(payload?.symbol || ''),
         channel: String(payload?.channel || ''),
         horizon_sec: Number.isFinite(Number(payload?.horizonSec)) ? Number(payload.horizonSec) : 30,
+        strategy_mode: String(payload?.strategyMode || 'market_making'),
+        hold_ms: Number.isFinite(Number(payload?.holdMs)) ? Number(payload.holdMs) : 500,
+        mm_adverse_ret_threshold: Number.isFinite(Number(payload?.mmAdverseRetThreshold))
+          ? Number(payload.mmAdverseRetThreshold)
+          : 0.0006,
+        mm_one_sided_imbalance_threshold: Number.isFinite(Number(payload?.mmOneSidedImbalanceThreshold))
+          ? Number(payload.mmOneSidedImbalanceThreshold)
+          : 0.15,
+        min_spread_bps: Number.isFinite(Number(payload?.minSpreadBps))
+          ? Number(payload.minSpreadBps)
+          : 0.8,
+        alpha_imbalance_threshold: Number.isFinite(Number(payload?.alphaImbalanceThreshold))
+          ? Number(payload.alphaImbalanceThreshold)
+          : 0.2,
+        alpha_pred_ret_threshold: Number.isFinite(Number(payload?.alphaPredRetThreshold))
+          ? Number(payload.alphaPredRetThreshold)
+          : 0.0001,
+        max_entry_spread_bps: Number.isFinite(Number(payload?.maxEntrySpreadBps))
+          ? Number(payload.maxEntrySpreadBps)
+          : 3.0,
         points
       };
 

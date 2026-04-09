@@ -36,10 +36,15 @@ def load_ticks(csv_path: str) -> pd.DataFrame:
     out["ts"] = pd.to_numeric(out["ts"], errors="coerce")
     out["price"] = pd.to_numeric(out["price"], errors="coerce")
     out = out.dropna(subset=["ts", "price"]).sort_values("ts").reset_index(drop=True)
+
+    optional_numeric = ["bidPx", "askPx", "bidSz", "askSz"]
+    for col in optional_numeric:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
     return out
 
 
-def build_features(df: pd.DataFrame, cfg: FeatureConfig) -> pd.DataFrame:
+def build_realtime_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     px = out["price"]
 
@@ -77,6 +82,31 @@ def build_features(df: pd.DataFrame, cfg: FeatureConfig) -> pd.DataFrame:
     out["rsi_14"] = 100.0 - (100.0 / (1.0 + rs))
     out["rsi_14"] = out["rsi_14"] / 100.0
 
+    # Optional order-book context features (when bid/ask are present).
+    if "bidPx" in out.columns and "askPx" in out.columns:
+        bid = pd.to_numeric(out["bidPx"], errors="coerce")
+        ask = pd.to_numeric(out["askPx"], errors="coerce")
+        mid = 0.5 * (bid + ask)
+        valid = (mid > 0) & (ask > 0) & (bid > 0)
+        out["mid_price"] = np.where(valid, mid, np.nan)
+        out["spread_bps"] = np.where(valid, ((ask - bid) / mid) * 10000.0, np.nan)
+    else:
+        out["mid_price"] = np.nan
+        out["spread_bps"] = np.nan
+
+    if "bidSz" in out.columns and "askSz" in out.columns:
+        bid_sz = pd.to_numeric(out["bidSz"], errors="coerce")
+        ask_sz = pd.to_numeric(out["askSz"], errors="coerce")
+        denom = bid_sz + ask_sz
+        out["book_imbalance"] = np.where(denom > 0, (bid_sz - ask_sz) / denom, np.nan)
+    else:
+        out["book_imbalance"] = np.nan
+
+    return out
+
+
+def create_future_labels(df_feat: pd.DataFrame, cfg: FeatureConfig) -> pd.DataFrame:
+    out = df_feat.copy()
     horizon_ms = cfg.horizon_sec * 1000
     future_ts = out["ts"] + horizon_ms
     idx = np.searchsorted(out["ts"].to_numpy(), future_ts.to_numpy(), side="left")
@@ -84,8 +114,14 @@ def build_features(df: pd.DataFrame, cfg: FeatureConfig) -> pd.DataFrame:
     future_price = out["price"].to_numpy()[idx]
     out["target_return"] = (future_price / out["price"]) - 1.0
     out["target_price"] = future_price
+    out["target_ts"] = out["ts"].to_numpy()[idx]
 
     return out
+
+
+def build_features(df: pd.DataFrame, cfg: FeatureConfig) -> pd.DataFrame:
+    # Backward-compatible helper used by existing scripts.
+    return create_future_labels(build_realtime_features(df), cfg)
 
 
 def select_training_rows(df_feat: pd.DataFrame) -> pd.DataFrame:

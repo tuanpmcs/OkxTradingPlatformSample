@@ -5,6 +5,7 @@ from pathlib import Path
 
 import joblib
 import numpy as np
+import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import train_test_split
@@ -14,7 +15,9 @@ from common import FEATURE_COLUMNS, FeatureConfig, build_features, load_ticks, s
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train better (tree-based) prediction model")
-    p.add_argument("--csv", required=True, help="Input ticks CSV")
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--csv", help="Input raw ticks CSV")
+    src.add_argument("--dataset-csv", help="Input labeled dataset CSV")
     p.add_argument("--model-out", required=True, help="Output model artifact (.joblib)")
     p.add_argument("--horizon-sec", type=int, default=30, help="Prediction horizon in seconds")
     p.add_argument("--test-size", type=float, default=0.2, help="Test split fraction")
@@ -24,9 +27,18 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    cfg = FeatureConfig(horizon_sec=args.horizon_sec)
-    df = load_ticks(args.csv)
-    ds = select_training_rows(build_features(df, cfg))
+    if args.dataset_csv:
+        ds = pd.read_csv(args.dataset_csv)
+        required = set(FEATURE_COLUMNS + ["target_return"])
+        missing = sorted(required - set(ds.columns))
+        if missing:
+            raise ValueError(f"dataset CSV missing required columns: {missing}")
+        ds = ds.replace([np.inf, -np.inf], np.nan).dropna(subset=FEATURE_COLUMNS + ["target_return"])
+    else:
+        cfg = FeatureConfig(horizon_sec=args.horizon_sec)
+        df = load_ticks(args.csv)
+        ds = select_training_rows(build_features(df, cfg))
+
     if len(ds) < 500:
         raise ValueError(f"Need at least 500 rows, got {len(ds)}")
 

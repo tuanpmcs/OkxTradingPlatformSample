@@ -55,6 +55,18 @@ For a ready-to-paste Lovable prompt, use:
 - `Use Simulated`: starts a local random-walk stream for quick UI testing.
 - `Stop`: disconnects and halts updates.
 
+## Strategy Auto Trade
+
+- Strategy selector supports:
+  - `Market Making`: spread-aware quoting logic with adverse-selection filter.
+  - `Short-Term Alpha`: imbalance-driven directional entries (`LONG/SHORT`) and fast exits.
+- `Start Auto` now opens and closes positions automatically using strategy conditions and `Hold (ms)`.
+- Controls:
+  - `Imbalance Threshold`
+  - `Adverse/Predict Threshold`
+  - `Min Spread (bps)`
+  - `Hold (ms)`
+
 ## Notes
 
 - Renderer chart uses Chart.js.

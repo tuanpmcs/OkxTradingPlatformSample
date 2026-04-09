@@ -57,7 +57,10 @@ Default server:
 - Serving:
   - `prediction_server.py` loads `.json`, `.joblib`, or `.pt` and serves gRPC
 - Utilities:
-  - `collect_ticks_from_grpc.py` to build CSV from live stream
+  - `collect_ticks_from_grpc.py` to collect trades + order-book rows from live stream
+  - `build_realtime_features.py` to build real-time style feature rows
+  - `create_future_labels.py` to create future-Δt supervised labels
+  - `simulate_strategy.py` with `market_making` and `short_term_alpha` modes
   - `predict_client.py` for direct prediction smoke test
 
 ## Runtime Data Flow

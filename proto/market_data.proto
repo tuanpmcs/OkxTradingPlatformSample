@@ -28,6 +28,10 @@ message Tick {
 message PricePoint {
   int64 ts = 1;
   double price = 2;
+  double bid_px = 3;
+  double ask_px = 4;
+  double bid_sz = 5;
+  double ask_sz = 6;
 }
 
 message PredictRequest {
@@ -35,6 +39,14 @@ message PredictRequest {
   string channel = 2;
   int32 horizon_sec = 3;
   repeated PricePoint points = 4;
+  string strategy_mode = 5; // market_making | short_term_alpha
+  int32 hold_ms = 6;
+  double mm_adverse_ret_threshold = 7;
+  double mm_one_sided_imbalance_threshold = 8;
+  double min_spread_bps = 9;
+  double alpha_imbalance_threshold = 10;
+  double alpha_pred_ret_threshold = 11;
+  double max_entry_spread_bps = 12;
 }
 
 message PredictResponse {

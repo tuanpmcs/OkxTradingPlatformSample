@@ -14,14 +14,27 @@ const grpcChartCanvas = document.getElementById('grpc-chart-canvas');
 const grpcChartMeta = document.getElementById('grpc-chart-meta');
 const simAccountInput = document.getElementById('sim-account-input');
 const simCapitalInput = document.getElementById('sim-capital-input');
+const simStrategySelect = document.getElementById('sim-strategy-select');
 const simHorizonInput = document.getElementById('sim-horizon-input');
+const simHoldMsInput = document.getElementById('sim-hold-ms-input');
 const simRangeInput = document.getElementById('sim-range-input');
+const simImbalanceInput = document.getElementById('sim-imbalance-input');
+const simAdverseInput = document.getElementById('sim-adverse-input');
+const simMinSpreadInput = document.getElementById('sim-min-spread-input');
+const simModeBadge = document.getElementById('sim-mode-badge');
+const simAutoBadge = document.getElementById('sim-auto-badge');
+const simRuleHint = document.getElementById('sim-rule-hint');
+const simAdverseTitle = document.getElementById('sim-adverse-title');
+const simMinSpreadWrap = document.getElementById('sim-min-spread-wrap');
+const simAdverseWrap = document.getElementById('sim-adverse-wrap');
 const simInferBtn = document.getElementById('sim-infer-btn');
 const simOpenBtn = document.getElementById('sim-open-btn');
 const simCloseBtn = document.getElementById('sim-close-btn');
 const simAutoStartBtn = document.getElementById('sim-auto-start-btn');
 const simAutoStopBtn = document.getElementById('sim-auto-stop-btn');
 const simAccountResetBtn = document.getElementById('sim-account-reset-btn');
+const simPresetFastBtn = document.getElementById('sim-preset-fast-btn');
+const simPresetUltraBtn = document.getElementById('sim-preset-ultra-btn');
 const simSummary = document.getElementById('sim-summary');
 const simSignal = document.getElementById('sim-signal');
 const simPredPrice = document.getElementById('sim-pred-price');
@@ -73,6 +86,8 @@ const simState = {
   capital: 5000,
   horizonMs: 30000,
   openedTs: 0,
+  strategy: 'market_making',
+  side: 'LONG',
   entryPrice: 0,
   exitPrice: 0,
   predictedPrice: 0,
@@ -87,9 +102,11 @@ const autoTradeState = {
   running: false,
   endTs: 0,
   totalPnl: 0,
+  sessionStartEquity: 0,
   trades: 0,
   wins: 0,
-  losses: 0
+  losses: 0,
+  lastEntryTs: 0
 };
 const accountState = {
   initialized: false,
@@ -184,6 +201,7 @@ function appendGrpcPoint(point) {
   if (!Number.isFinite(numericPrice) || numericPrice <= 0) {
     return;
   }
+  const fields = point?.fields || {};
   const key = buildPointKey(point);
   if (!grpcSeriesByKey.has(key)) {
     grpcSeriesByKey.set(key, []);
@@ -191,7 +209,11 @@ function appendGrpcPoint(point) {
   const series = grpcSeriesByKey.get(key);
   series.push({
     ts: Number(point?.ts) || Date.now(),
-    price: numericPrice
+    price: numericPrice,
+    bidPx: Number(fields.bidPx),
+    askPx: Number(fields.askPx),
+    bidSz: Number(fields.bidSz),
+    askSz: Number(fields.askSz)
   });
   latestGrpcSeriesKey = key;
   if (series.length > 480) {
@@ -408,10 +430,19 @@ function buildPredictionPayload(series) {
   const points = Array.isArray(series) ? series.slice(-120) : [];
   const [channel = '', symbol = ''] = String(activeGrpcSeriesKey || '').split(':');
   const horizonSec = Math.max(1, Number(simHorizonInput?.value || 30));
+  const cfg = readStrategyConfig();
   return {
     symbol,
     channel,
     horizonSec,
+    strategyMode: cfg.strategy,
+    holdMs: cfg.holdMs,
+    mmAdverseRetThreshold: cfg.adverseThreshold,
+    mmOneSidedImbalanceThreshold: cfg.imbalanceThreshold,
+    minSpreadBps: cfg.minSpreadBps,
+    alphaImbalanceThreshold: cfg.imbalanceThreshold,
+    alphaPredRetThreshold: Math.max(0.00001, cfg.adverseThreshold * 0.2),
+    maxEntrySpreadBps: Math.max(3, cfg.minSpreadBps * 3),
     points
   };
 }
@@ -490,6 +521,169 @@ function parseAccountInput() {
   return parseMoneyInput(simAccountInput, 0);
 }
 
+function parsePositiveNumber(inputEl, fallback) {
+  const raw = Number(inputEl?.value);
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return fallback;
+  }
+  return raw;
+}
+
+function readStrategyConfig() {
+  return {
+    strategy: String(simStrategySelect?.value || 'market_making'),
+    holdMs: Math.max(50, Math.round(parsePositiveNumber(simHoldMsInput, 500))),
+    imbalanceThreshold: parsePositiveNumber(simImbalanceInput, 0.2),
+    adverseThreshold: parsePositiveNumber(simAdverseInput, 0.0006),
+    minSpreadBps: parsePositiveNumber(simMinSpreadInput, 0.8),
+    alphaCooldownMs: 250
+  };
+}
+
+function refreshStrategyUi() {
+  const cfg = readStrategyConfig();
+  const isMM = cfg.strategy === 'market_making';
+
+  if (simModeBadge) {
+    simModeBadge.textContent = isMM ? 'Mode: Market Making' : 'Mode: Short-Term Alpha';
+  }
+  if (simRuleHint) {
+    simRuleHint.textContent = isMM
+      ? 'Quote both sides, skip adverse windows.'
+      : 'Trade direction on imbalance, exit quickly.';
+  }
+  if (simAdverseTitle) {
+    simAdverseTitle.textContent = isMM ? 'Adverse Filter' : 'Model Confirm Threshold';
+  }
+  if (simMinSpreadWrap) {
+    simMinSpreadWrap.classList.toggle('input-muted', !isMM);
+  }
+  if (simAdverseWrap) {
+    simAdverseWrap.classList.toggle('input-muted', false);
+  }
+}
+
+function refreshAutoBadge() {
+  if (!simAutoBadge) {
+    return;
+  }
+  simAutoBadge.classList.toggle('sim-badge-live', autoTradeState.running);
+  simAutoBadge.classList.toggle('sim-badge-idle', !autoTradeState.running);
+  simAutoBadge.textContent = autoTradeState.running ? 'Auto: RUNNING' : 'Auto: OFF';
+}
+
+function applyAlphaPreset(level = 'fast') {
+  simStrategySelect.value = 'short_term_alpha';
+  if (level === 'ultra') {
+    simCapitalInput.value = '20,000';
+    simHoldMsInput.value = '80';
+    simImbalanceInput.value = '0.03';
+    simAdverseInput.value = '0.00002';
+    simRangeInput.value = '420';
+    simSummary.textContent = 'Preset Alpha Ultra applied: very aggressive, high turnover, higher drawdown risk.';
+  } else {
+    simCapitalInput.value = '10,000';
+    simHoldMsInput.value = '140';
+    simImbalanceInput.value = '0.06';
+    simAdverseInput.value = '0.00005';
+    simRangeInput.value = '300';
+    simSummary.textContent = 'Preset Alpha Fast applied: active entries with moderate aggression.';
+  }
+  formatCapitalInput();
+  refreshStrategyUi();
+}
+
+function parseBookStatsFromPoint(point) {
+  const fields = point?.fields || {};
+  const bid = Number(fields.bidPx);
+  const ask = Number(fields.askPx);
+  const bidSz = Number(fields.bidSz);
+  const askSz = Number(fields.askSz);
+  if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0 || ask <= 0 || ask <= bid) {
+    return null;
+  }
+  const mid = 0.5 * (bid + ask);
+  const spreadBps = ((ask - bid) / mid) * 10000;
+  let imbalance = 0;
+  if (Number.isFinite(bidSz) && Number.isFinite(askSz) && bidSz + askSz > 0) {
+    imbalance = (bidSz - askSz) / (bidSz + askSz);
+  }
+  return { bid, ask, mid, spreadBps, imbalance };
+}
+
+function decideTradeByStrategy(prediction, point) {
+  if (!prediction || !point) {
+    return { action: 'HOLD', reason: 'No prediction/point' };
+  }
+  if (prediction.signal === 'LONG' || prediction.signal === 'SHORT' || prediction.signal === 'HOLD') {
+    return {
+      action: prediction.signal,
+      reason: prediction.detail ? `server: ${prediction.detail}` : 'server strategy decision'
+    };
+  }
+
+  const cfg = readStrategyConfig();
+  const book = parseBookStatsFromPoint(point);
+  if (!book) {
+    return { action: 'HOLD', reason: 'No valid bid/ask yet' };
+  }
+
+  const score = Number(prediction.score) || 0;
+  const absScore = Math.abs(score);
+  const absImb = Math.abs(book.imbalance);
+
+  if (cfg.strategy === 'market_making') {
+    if (book.spreadBps < cfg.minSpreadBps) {
+      return { action: 'HOLD', reason: `Spread ${book.spreadBps.toFixed(2)}bps below min` };
+    }
+    if (absScore >= cfg.adverseThreshold) {
+      return { action: 'HOLD', reason: `Adverse filter hit (|ret|=${absScore.toFixed(5)})` };
+    }
+    if (book.imbalance >= cfg.imbalanceThreshold) {
+      return { action: 'SHORT', reason: `MM one-sided risk (imb=${book.imbalance.toFixed(2)})` };
+    }
+    if (book.imbalance <= -cfg.imbalanceThreshold) {
+      return { action: 'LONG', reason: `MM one-sided risk (imb=${book.imbalance.toFixed(2)})` };
+    }
+    if (score > 0) {
+      return { action: 'LONG', reason: `MM balanced book + positive drift (${score.toFixed(5)})` };
+    }
+    if (score < 0) {
+      return { action: 'SHORT', reason: `MM balanced book + negative drift (${score.toFixed(5)})` };
+    }
+    return { action: 'HOLD', reason: 'MM neutral conditions' };
+  }
+
+  // short_term_alpha
+  if (book.spreadBps > Math.max(3, cfg.minSpreadBps * 3)) {
+    return { action: 'HOLD', reason: `Spread too wide (${book.spreadBps.toFixed(2)}bps)` };
+  }
+  if (absImb < cfg.imbalanceThreshold) {
+    return { action: 'HOLD', reason: `Imbalance ${absImb.toFixed(2)} below threshold` };
+  }
+  if (book.imbalance > 0 && score >= cfg.adverseThreshold * 0.2) {
+    return { action: 'LONG', reason: `Alpha long (imb=${book.imbalance.toFixed(2)}, ret=${score.toFixed(5)})` };
+  }
+  if (book.imbalance < 0 && score <= -cfg.adverseThreshold * 0.2) {
+    return { action: 'SHORT', reason: `Alpha short (imb=${book.imbalance.toFixed(2)}, ret=${score.toFixed(5)})` };
+  }
+  return { action: 'HOLD', reason: 'Model does not confirm imbalance' };
+}
+
+function shouldEnterAuto(decision) {
+  if (!decision || decision.action === 'HOLD') {
+    return false;
+  }
+  const cfg = readStrategyConfig();
+  if (cfg.strategy === 'short_term_alpha') {
+    const now = Date.now();
+    if (now - autoTradeState.lastEntryTs < cfg.alphaCooldownMs) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function formatAccountInput() {
   if (!simAccountInput) {
     return;
@@ -520,7 +714,14 @@ function renderAccountStats(lastPrice = null) {
 
   const price = Number(lastPrice);
   const hasPosition = simState.open && Number.isFinite(price) && price > 0;
-  const positionValue = hasPosition ? simState.qty * price : 0;
+  let positionValue = 0;
+  if (hasPosition) {
+    if (simState.side === 'SHORT') {
+      positionValue = simState.capital + (simState.entryPrice - price) * simState.qty;
+    } else {
+      positionValue = simState.qty * price;
+    }
+  }
   accountState.equity = accountState.cash + positionValue;
 
   simAccountCash.textContent = formatUsd(accountState.cash);
@@ -561,6 +762,15 @@ function renderAutoSessionStats() {
   setPnlColor(simTotalPnl, autoTradeState.totalPnl);
 }
 
+function updateSessionProfitFromEquity(lastPrice = null) {
+  if (!autoTradeState.running || !accountState.initialized) {
+    return;
+  }
+  renderAccountStats(lastPrice);
+  autoTradeState.totalPnl = accountState.equity - autoTradeState.sessionStartEquity;
+  renderAutoSessionStats();
+}
+
 function closeSimulation(reason = 'Closed', options = {}) {
   const { recordInSession = false } = options;
   if (!simState.open) return;
@@ -570,10 +780,18 @@ function closeSimulation(reason = 'Closed', options = {}) {
     ? activeSeries[activeSeries.length - 1]
     : null;
   const exitPrice = lastPoint ? Number(lastPoint.price) : simState.entryPrice;
-  const proceeds = exitPrice * simState.qty;
-  const realizedPnl = proceeds - simState.capital;
-  accountState.cash += proceeds;
-  accountState.lastAction = 'SELL';
+  let realizedPnl = 0;
+  let settlement = simState.capital;
+  if (simState.side === 'SHORT') {
+    realizedPnl = (simState.entryPrice - exitPrice) * simState.qty;
+    settlement += realizedPnl;
+    accountState.lastAction = 'COVER';
+  } else {
+    realizedPnl = (exitPrice - simState.entryPrice) * simState.qty;
+    settlement += realizedPnl;
+    accountState.lastAction = 'SELL';
+  }
+  accountState.cash += settlement;
   const finalEquity = accountState.cash;
 
   simState.open = false;
@@ -584,23 +802,22 @@ function closeSimulation(reason = 'Closed', options = {}) {
 
   simLivePnl.textContent = formatUsdSigned(realizedPnl);
   simLiveEquity.textContent = formatUsd(finalEquity);
-  simPosition.textContent = `CLOSED (BUY -> SELL)`;
+  simPosition.textContent = `CLOSED (${simState.side})`;
   setPnlColor(simLivePnl, realizedPnl);
   setPnlColor(simLiveEquity, realizedPnl);
   renderAccountStats(exitPrice);
 
   if (recordInSession) {
-    autoTradeState.totalPnl += realizedPnl;
     autoTradeState.trades += 1;
     if (realizedPnl >= 0) autoTradeState.wins += 1;
     else autoTradeState.losses += 1;
-    renderAutoSessionStats();
+    updateSessionProfitFromEquity(exitPrice);
   }
 
-  simSummary.textContent = `${reason}. BUY @ ${simState.entryPrice.toFixed(2)} -> SELL @ ${exitPrice.toFixed(2)} | Realized PnL: ${formatUsdSigned(realizedPnl)} | Equity: ${formatUsd(finalEquity)}`;
+  simSummary.textContent = `${reason}. ${simState.side} @ ${simState.entryPrice.toFixed(2)} -> CLOSE @ ${exitPrice.toFixed(2)} | Realized PnL: ${formatUsdSigned(realizedPnl)} | Equity: ${formatUsd(finalEquity)}`;
 }
 
-function openSimulationFromPrediction(pred, resolvedKey, capital, horizonSec, mode = 'manual') {
+function openSimulationFromPrediction(pred, resolvedKey, capital, horizonSec, mode = 'manual', side = 'LONG', decisionReason = '') {
   if (!pred) {
     simSummary.textContent = 'Prediction not available.';
     return false;
@@ -613,13 +830,6 @@ function openSimulationFromPrediction(pred, resolvedKey, capital, horizonSec, mo
     simSummary.textContent = 'Horizon must be at least 1 second.';
     return false;
   }
-  if (pred.predictedPrice <= pred.lastPrice) {
-    if (mode !== 'auto') {
-      simSummary.textContent = 'Prediction is not above current price, so simulator will not BUY.';
-    }
-    return false;
-  }
-
   initializeAccountIfNeeded();
   if (accountState.cash < capital) {
     simSummary.textContent = `Insufficient account cash. Need ${formatUsd(capital)}, available ${formatUsd(accountState.cash)}.`;
@@ -627,13 +837,16 @@ function openSimulationFromPrediction(pred, resolvedKey, capital, horizonSec, mo
   }
 
   const qty = capital / pred.lastPrice;
-  const expectedPnl = (pred.predictedPrice - pred.lastPrice) * qty;
+  const direction = side === 'SHORT' ? -1 : 1;
+  const expectedPnl = (pred.predictedPrice - pred.lastPrice) * qty * direction;
 
   simState.open = true;
   accountState.cash -= capital;
-  accountState.lastAction = 'BUY';
+  accountState.lastAction = side === 'SHORT' ? 'SHORT' : 'BUY';
   simState.capital = capital;
-  simState.horizonMs = horizonSec * 1000;
+  simState.strategy = String(simStrategySelect?.value || 'market_making');
+  simState.side = side === 'SHORT' ? 'SHORT' : 'LONG';
+  simState.horizonMs = readStrategyConfig().holdMs;
   simState.openedTs = Date.now();
   simState.entryPrice = pred.lastPrice;
   simState.predictedPrice = pred.predictedPrice;
@@ -644,9 +857,13 @@ function openSimulationFromPrediction(pred, resolvedKey, capital, horizonSec, mo
   simState.realizedPnl = 0;
   simState.pendingDecision = false;
   simState.holdCycles = 0;
+  if (mode === 'auto') {
+    autoTradeState.lastEntryTs = Date.now();
+  }
   renderAccountStats(pred.lastPrice);
 
-  simSummary.textContent = `BUY opened on ${simState.seriesKey} with ${formatUsd(capital)} | Entry: ${pred.lastPrice.toFixed(2)} | Predicted: ${pred.predictedPrice.toFixed(2)} | Horizon: ${horizonSec}s | Model: ${pred.modelName || PREBUILT_MODEL.name}`;
+  const reasonText = decisionReason ? ` | Reason: ${decisionReason}` : '';
+  simSummary.textContent = `${simState.side} opened on ${simState.seriesKey} with ${formatUsd(capital)} | Entry: ${pred.lastPrice.toFixed(2)} | Predicted: ${pred.predictedPrice.toFixed(2)} | Hold: ${simState.horizonMs}ms | Model: ${pred.modelName || PREBUILT_MODEL.name}${reasonText}`;
   return true;
 }
 
@@ -663,18 +880,30 @@ async function evaluateHorizonDecision(series) {
 
     const lastPoint = Array.isArray(series) && series.length > 0 ? series[series.length - 1] : null;
     const currentPrice = lastPoint ? Number(lastPoint.price) : simState.entryPrice;
-    const shouldHold = !!pred && Number.isFinite(currentPrice) && pred.predictedPrice > currentPrice;
+    const isAlpha = simState.strategy === 'short_term_alpha';
+    let shouldHold = false;
+    if (!isAlpha && pred && Number.isFinite(currentPrice)) {
+      if (simState.side === 'SHORT') {
+        shouldHold = pred.predictedPrice < currentPrice;
+      } else {
+        shouldHold = pred.predictedPrice > currentPrice;
+      }
+    }
 
     if (shouldHold) {
       simState.openedTs = Date.now();
       simState.predictedPrice = pred.predictedPrice;
       simState.expectedPnl = (pred.predictedPrice - currentPrice) * simState.qty;
       simState.holdCycles += 1;
-      simSummary.textContent = `Horizon reached -> HOLD (${simState.holdCycles}) | New predicted price: ${pred.predictedPrice.toFixed(2)} | Model: ${pred.modelName || PREBUILT_MODEL.name}`;
+      simSummary.textContent = `Hold window reached -> EXTEND (${simState.holdCycles}) | Side: ${simState.side} | Predicted: ${pred.predictedPrice.toFixed(2)} | Model: ${pred.modelName || PREBUILT_MODEL.name}`;
       return;
     }
 
-    closeSimulation('Horizon reached -> SELL by prediction', { recordInSession: autoTradeState.running });
+    if (isAlpha) {
+      closeSimulation('Alpha quick exit at hold limit', { recordInSession: autoTradeState.running });
+    } else {
+      closeSimulation('Hold window reached -> CLOSE by prediction', { recordInSession: autoTradeState.running });
+    }
 
     // Re-entry is auto-mode only.
     if (!autoTradeState.running) {
@@ -697,8 +926,11 @@ async function evaluateHorizonDecision(series) {
     const latest = Array.isArray(refreshedSeries) && refreshedSeries.length > 0
       ? refreshedSeries[refreshedSeries.length - 1]
       : null;
-    const currentPriceReentry = latest ? Number(latest.price) : NaN;
-    if (!Number.isFinite(currentPriceReentry) || nextPred.predictedPrice <= currentPriceReentry) {
+    if (!latest) {
+      return;
+    }
+    const decision = decideTradeByStrategy(nextPred, latest);
+    if (decision.action === 'HOLD' || !shouldEnterAuto(decision)) {
       return;
     }
 
@@ -709,10 +941,12 @@ async function evaluateHorizonDecision(series) {
       resolved?.key || activeGrpcSeriesKey,
       capital,
       horizonSec,
-      'auto'
+      'auto',
+      decision.action,
+      decision.reason
     );
     if (opened) {
-      simSummary.textContent = `Re-entry BUY after SELL by prediction | ${resolved?.key || activeGrpcSeriesKey} | Predicted: ${nextPred.predictedPrice.toFixed(2)}`;
+      simSummary.textContent = `Re-entry ${decision.action} after close | ${resolved?.key || activeGrpcSeriesKey} | ${decision.reason}`;
     }
   } finally {
     simState.pendingDecision = false;
@@ -732,7 +966,21 @@ async function openSimulation() {
     simSummary.textContent = 'Need at least 8 data points before prediction.';
     return;
   }
-  openSimulationFromPrediction(pred, resolved?.key || activeGrpcSeriesKey, capital, horizonSec, 'manual');
+  const latest = Array.isArray(series) && series.length > 0 ? series[series.length - 1] : null;
+  const decision = decideTradeByStrategy(pred, latest);
+  if (decision.action === 'HOLD') {
+    simSummary.textContent = `No manual entry: ${decision.reason}`;
+    return;
+  }
+  openSimulationFromPrediction(
+    pred,
+    resolved?.key || activeGrpcSeriesKey,
+    capital,
+    horizonSec,
+    'manual',
+    decision.action,
+    decision.reason
+  );
 }
 
 function startAutoTradingSession() {
@@ -744,11 +992,16 @@ function startAutoTradingSession() {
   autoTradeState.running = true;
   autoTradeState.endTs = Date.now() + rangeSec * 1000;
   autoTradeState.totalPnl = 0;
+  initializeAccountIfNeeded();
+  renderAccountStats();
+  autoTradeState.sessionStartEquity = accountState.equity;
   autoTradeState.trades = 0;
   autoTradeState.wins = 0;
   autoTradeState.losses = 0;
   renderAutoSessionStats();
-  simSummary.textContent = `Auto trading started for ${rangeSec}s.`;
+  refreshAutoBadge();
+  const cfg = readStrategyConfig();
+  simSummary.textContent = `Auto trading started for ${rangeSec}s | Strategy: ${cfg.strategy} | Hold: ${cfg.holdMs}ms`;
 }
 
 function stopAutoTradingSession(reason = 'Auto trading stopped') {
@@ -758,7 +1011,9 @@ function stopAutoTradingSession(reason = 'Auto trading stopped') {
   if (simState.open) {
     closeSimulation('Auto session ended - SELL executed', { recordInSession: true });
   }
+  updateSessionProfitFromEquity();
   autoTradeState.running = false;
+  refreshAutoBadge();
   const winRate = autoTradeState.trades > 0
     ? ((autoTradeState.wins / autoTradeState.trades) * 100).toFixed(1)
     : '0.0';
@@ -786,13 +1041,15 @@ async function runInferenceNow() {
   const qtyPreview = Number.isFinite(capitalPreview) && capitalPreview > 0
     ? capitalPreview / prediction.lastPrice
     : 0;
-  const expectedPreview = (prediction.predictedPrice - prediction.lastPrice) * qtyPreview;
-
-  simSignal.textContent = prediction.predictedPrice > prediction.lastPrice ? 'BUY' : 'HOLD';
+  const latest = Array.isArray(series) && series.length > 0 ? series[series.length - 1] : null;
+  const decision = decideTradeByStrategy(prediction, latest);
+  const direction = decision.action === 'SHORT' ? -1 : 1;
+  const expectedPreview = (prediction.predictedPrice - prediction.lastPrice) * qtyPreview * direction;
+  simSignal.textContent = decision.action;
   simPredPrice.textContent = `$${prediction.predictedPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
   simExpPnl.textContent = formatUsdSigned(expectedPreview);
   setPnlColor(simExpPnl, expectedPreview);
-  simSummary.textContent = `Inference done on ${resolved?.key || activeGrpcSeriesKey || '-'} | Model: ${prediction.modelName || PREBUILT_MODEL.name} | Signal: ${simSignal.textContent}`;
+  simSummary.textContent = `Inference done on ${resolved?.key || activeGrpcSeriesKey || '-'} | Model: ${prediction.modelName || PREBUILT_MODEL.name} | Signal: ${simSignal.textContent} | ${decision.reason}`;
 }
 
 function updatePredictionAndSimulation(series) {
@@ -818,9 +1075,11 @@ function updatePredictionAndSimulation(series) {
   const qtyPreview = Number.isFinite(capitalPreview) && capitalPreview > 0
     ? capitalPreview / prediction.lastPrice
     : 0;
-  const expectedPreview = (prediction.predictedPrice - prediction.lastPrice) * qtyPreview;
-
-  simSignal.textContent = prediction.predictedPrice > prediction.lastPrice ? 'BUY' : 'HOLD';
+  const latest = Array.isArray(series) && series.length > 0 ? series[series.length - 1] : null;
+  const decision = decideTradeByStrategy(prediction, latest);
+  const direction = decision.action === 'SHORT' ? -1 : 1;
+  const expectedPreview = (prediction.predictedPrice - prediction.lastPrice) * qtyPreview * direction;
+  simSignal.textContent = decision.action;
   simPredPrice.textContent = `$${prediction.predictedPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
   simExpPnl.textContent = formatUsdSigned(expectedPreview);
   setPnlColor(simExpPnl, expectedPreview);
@@ -830,15 +1089,16 @@ function updatePredictionAndSimulation(series) {
     simLiveEquity.textContent = '-';
     simPosition.textContent = '-';
     if (!autoTradeState.running) {
-      simSummary.textContent = `Model ${(prediction.modelName || PREBUILT_MODEL.name)}: ${prediction.predictedPrice > prediction.lastPrice ? 'BUY candidate' : 'HOLD'} on ${activeGrpcSeriesKey || '-'} (ready).`;
+      simSummary.textContent = `Model ${(prediction.modelName || PREBUILT_MODEL.name)} on ${activeGrpcSeriesKey || '-'}: ${decision.action} | ${decision.reason}`;
     }
     renderAccountStats(prediction.lastPrice);
+    updateSessionProfitFromEquity(prediction.lastPrice);
 
     if (autoTradeState.running) {
       const now = Date.now();
       if (now >= autoTradeState.endTs) {
         stopAutoTradingSession('Auto trading time range ended');
-      } else if (prediction.predictedPrice > prediction.lastPrice) {
+      } else if (shouldEnterAuto(decision)) {
         const resolved = resolveActiveSeries();
         const capital = parseCapitalInput() || 5000;
         const horizonSec = Number(simHorizonInput?.value || 30);
@@ -847,7 +1107,9 @@ function updatePredictionAndSimulation(series) {
           resolved?.key || activeGrpcSeriesKey,
           capital,
           horizonSec,
-          'auto'
+          'auto',
+          decision.action,
+          decision.reason
         );
       }
     }
@@ -862,21 +1124,37 @@ function updatePredictionAndSimulation(series) {
     return;
   }
 
-  const livePnl = (lastPoint.price - simState.entryPrice) * simState.qty;
+  const livePnl = simState.side === 'SHORT'
+    ? (simState.entryPrice - lastPoint.price) * simState.qty
+    : (lastPoint.price - simState.entryPrice) * simState.qty;
   const liveEquity = simState.capital + livePnl;
   const elapsedMs = Date.now() - simState.openedTs;
   const leftMs = Math.max(0, simState.horizonMs - elapsedMs);
 
   simLivePnl.textContent = formatUsdSigned(livePnl);
   simLiveEquity.textContent = formatUsd(liveEquity);
-  simPosition.textContent = `BUY ${simState.qty.toFixed(4)} (${Math.ceil(leftMs / 1000)}s left)`;
+  simPosition.textContent = `${simState.side} ${simState.qty.toFixed(4)} (${leftMs}ms left)`;
   setPnlColor(simLivePnl, livePnl);
   setPnlColor(simLiveEquity, livePnl);
   renderAccountStats(lastPoint.price);
+  updateSessionProfitFromEquity(lastPoint.price);
 
   if (leftMs <= 0) {
-    simPosition.textContent = `BUY ${simState.qty.toFixed(4)} (decision...)`;
+    simPosition.textContent = `${simState.side} ${simState.qty.toFixed(4)} (decision...)`;
     evaluateHorizonDecision(activeSeries);
+  }
+
+  // Fast defensive exit for short-term alpha when signal flips.
+  if (simState.open && simState.strategy === 'short_term_alpha') {
+    const flip =
+      (simState.side === 'LONG' && decision.action === 'SHORT') ||
+      (simState.side === 'SHORT' && decision.action === 'LONG');
+    if (flip) {
+      closeSimulation(`Alpha protective exit on signal flip (${decision.action})`, {
+        recordInSession: autoTradeState.running
+      });
+      return;
+    }
   }
 
   if (autoTradeState.running && Date.now() >= autoTradeState.endTs) {
@@ -1129,7 +1407,7 @@ stopBtn.addEventListener('click', async () => {
   if (autoTradeState.running) {
     stopAutoTradingSession('Auto trading stopped because stream stopped');
   } else {
-    closeSimulation('SELL executed because stream stopped');
+    closeSimulation('Position closed because stream stopped');
   }
   await window.streamApi.stop();
 });
@@ -1143,7 +1421,7 @@ simInferBtn.addEventListener('click', async () => {
 });
 
 simCloseBtn.addEventListener('click', () => {
-  closeSimulation('Manual SELL executed', { recordInSession: autoTradeState.running });
+  closeSimulation('Manual close executed', { recordInSession: autoTradeState.running });
 });
 
 simAutoStartBtn.addEventListener('click', () => {
@@ -1152,6 +1430,18 @@ simAutoStartBtn.addEventListener('click', () => {
 
 simAutoStopBtn.addEventListener('click', () => {
   stopAutoTradingSession('Auto trading stopped by user');
+});
+
+simPresetFastBtn?.addEventListener('click', () => {
+  applyAlphaPreset('fast');
+});
+
+simPresetUltraBtn?.addEventListener('click', () => {
+  applyAlphaPreset('ultra');
+});
+
+simStrategySelect?.addEventListener('change', () => {
+  refreshStrategyUi();
 });
 
 simCapitalInput?.addEventListener('focus', () => {
@@ -1203,6 +1493,8 @@ addRowBtn.addEventListener('click', () => {
 
 subscriptionRows.appendChild(createSubscriptionRow({ symbol: 'BTC-USDT', channel: 'tickers' }));
 subscriptionRows.appendChild(createSubscriptionRow({ symbol: 'BTC-USDT', channel: 'trades' }));
+subscriptionRows.appendChild(createSubscriptionRow({ symbol: 'BTC-USDT', channel: 'books' }));
+subscriptionRows.appendChild(createSubscriptionRow({ symbol: 'BTC-USDT', channel: 'books5' }));
 notifyChartSymbol('BTC-USDT');
 pickActiveGrpcSeriesKey(getSubscriptions());
 
@@ -1210,5 +1502,7 @@ formatCapitalInput();
 formatAccountInput();
 initializeAccountIfNeeded();
 renderAutoSessionStats();
+refreshStrategyUi();
+refreshAutoBadge();
 initGrpcCanvas();
 startLoop();

@@ -1,7 +1,7 @@
 :root {
   --bg-0: #07131b;
   --bg-1: #0d1e2d;
-  --card: rgba(11, 28, 40, 0.8);
+  --card: rgba(10, 26, 38, 0.78);
   --edge: rgba(148, 199, 229, 0.2);
   --text: #dceef8;
   --muted: #8db2c6;
@@ -9,6 +9,8 @@
   --bad: #ff6b5e;
   --accent: #48b8ff;
   --warm: #ffb36b;
+  --focus: rgba(72, 184, 255, 0.55);
+  --panel: rgba(8, 19, 30, 0.56);
 }
 
 * {
@@ -29,7 +31,7 @@ body {
 .app-shell {
   width: min(96vw, 1460px);
   margin: 0 auto;
-  padding: clamp(0.9rem, 1.8vw, 1.6rem);
+  padding: clamp(0.95rem, 1.85vw, 1.75rem);
   position: relative;
   z-index: 2;
 }
@@ -60,6 +62,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.8rem;
+  padding: 0.25rem 0.1rem 0.55rem;
 }
 
 .eyebrow {
@@ -73,14 +77,26 @@ body {
 h1 {
   margin: 0.2rem 0 0;
   font-size: clamp(2rem, 3vw, 2.8rem);
+  letter-spacing: 0.01em;
 }
 
 .card {
   border: 1px solid var(--edge);
   background: var(--card);
   backdrop-filter: blur(9px);
-  border-radius: 16px;
-  box-shadow: 0 12px 26px rgba(5, 13, 21, 0.28);
+  border-radius: 18px;
+  box-shadow: 0 16px 34px rgba(5, 13, 21, 0.36);
+  position: relative;
+  overflow: hidden;
+}
+
+.card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0));
+  pointer-events: none;
 }
 
 .controls {
@@ -111,13 +127,22 @@ input,
 select {
   background: rgba(8, 19, 30, 0.72);
   padding: 0.64rem 0.72rem;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+input:focus,
+select:focus {
+  outline: none;
+  border-color: var(--focus);
+  box-shadow: 0 0 0 2px rgba(72, 184, 255, 0.2);
+  background: rgba(7, 18, 28, 0.9);
 }
 
 .btn {
-  padding: 0.7rem 0.95rem;
+  padding: 0.72rem 0.96rem;
   font-weight: 600;
   cursor: pointer;
-  transition: transform 150ms ease, filter 200ms ease;
+  transition: transform 150ms ease, filter 200ms ease, box-shadow 200ms ease;
 }
 
 .btn-sm {
@@ -167,14 +192,17 @@ select {
 .btn:hover {
   transform: translateY(-1px);
   filter: brightness(1.08);
+  box-shadow: 0 8px 18px rgba(5, 13, 21, 0.28);
 }
 
 .btn-primary {
   background: linear-gradient(130deg, #188ad5, #2fb2e8);
+  border-color: rgba(105, 201, 248, 0.45);
 }
 
 .btn-secondary {
   background: linear-gradient(130deg, #209f8a, #3fd4b0);
+  border-color: rgba(109, 228, 194, 0.4);
 }
 
 .btn-ghost {
@@ -212,7 +240,7 @@ select {
 }
 
 .stats-grid {
-  margin-top: 1rem;
+  margin-top: 1.05rem;
   display: grid;
   gap: 0.9rem;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -223,46 +251,162 @@ select {
   padding: 0.9rem 1rem;
 }
 
+.sim-mode-strip {
+  margin-top: 0.55rem;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.sim-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(172, 217, 240, 0.24);
+  background: rgba(8, 19, 30, 0.55);
+  color: #cbe2ef;
+  padding: 0.2rem 0.58rem;
+  font-size: 0.72rem;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.sim-badge-idle {
+  color: #8db2c6;
+}
+
+.sim-badge-live {
+  color: #9ff2cf;
+  border-color: rgba(49, 207, 151, 0.42);
+  background: rgba(49, 207, 151, 0.15);
+}
+
+.sim-rule-hint {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
 .sim-grid {
   margin-top: 0.65rem;
   display: grid;
   gap: 0.75rem;
-  grid-template-columns: 1fr 1fr 1fr 1fr auto auto auto auto auto;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   align-items: end;
+}
+
+.sim-grid label {
+  display: grid;
+  gap: 0.34rem;
+  background: var(--panel);
+  border: 1px solid rgba(148, 199, 229, 0.14);
+  border-radius: 12px;
+  padding: 0.55rem 0.6rem 0.65rem;
+}
+
+.sim-layout {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: 2fr 1.2fr;
+}
+
+.sim-block {
+  border: 1px solid rgba(148, 199, 229, 0.16);
+  border-radius: 14px;
+  background: rgba(7, 19, 29, 0.54);
+  padding: 0.72rem;
+}
+
+.sim-block-title {
+  margin: 0;
+  color: #9cc9df;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
+.sim-grid-config {
+  margin-top: 0.6rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.sim-grid-exec {
+  margin-top: 0.6rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sim-actions {
+  margin-top: 0.7rem;
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.input-title {
+  font-size: 0.76rem;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.input-muted {
+  opacity: 0.52;
+}
+
+.sim-grid > button {
+  min-height: 42px;
 }
 
 .sim-summary {
   margin-top: 0.7rem;
-  padding: 0.55rem 0.7rem;
+  padding: 0.62rem 0.75rem;
   border: 1px solid rgba(172, 217, 240, 0.16);
   border-radius: 10px;
   background: rgba(8, 19, 30, 0.62);
   color: #cbe2ef;
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.78rem;
+  line-height: 1.4;
+  min-height: calc(0.78rem * 1.4 * 3 + 1.24rem);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
 }
 
 .sim-metrics {
   margin-top: 0.75rem;
   display: grid;
   gap: 0.75rem;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .stat {
   padding: 1rem;
+  transition: transform 140ms ease, border-color 180ms ease, background 180ms ease;
+  border-color: rgba(148, 199, 229, 0.18);
+}
+
+.stat:hover {
+  transform: translateY(-1px);
+  border-color: rgba(148, 199, 229, 0.34);
+  background: rgba(11, 30, 44, 0.9);
 }
 
 .stat p {
   margin: 0;
   color: var(--muted);
-  font-size: 0.84rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .stat h2 {
   margin: 0.42rem 0 0;
   font-family: "IBM Plex Mono", monospace;
   letter-spacing: 0.01em;
+  font-size: clamp(1.02rem, 1.2vw, 1.28rem);
 }
 
 .chart-card {
@@ -309,7 +453,7 @@ select {
   margin-top: 0.65rem;
   border: 1px solid rgba(172, 217, 240, 0.16);
   border-radius: 12px;
-  background: rgba(8, 19, 30, 0.62);
+  background: rgba(8, 19, 30, 0.68);
   padding: 0.4rem;
   min-height: clamp(220px, 30vh, 360px);
 }
@@ -331,6 +475,12 @@ select {
   border-radius: 10px;
   background: rgba(8, 19, 30, 0.62);
   padding: 0.55rem 0.7rem;
+  transition: border-color 160ms ease, transform 160ms ease;
+}
+
+.channel-row:hover {
+  border-color: rgba(148, 199, 229, 0.35);
+  transform: translateY(-1px);
 }
 
 .channel-row .channel-name {
@@ -385,7 +535,7 @@ select {
 
 @media (max-width: 1024px) {
   .stats-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .dual-charts {
@@ -394,6 +544,14 @@ select {
 
   .sim-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .sim-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .sim-grid-config {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .sim-metrics {
@@ -408,7 +566,7 @@ select {
   }
 
   .stats-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .subscription-row {
@@ -424,7 +582,22 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .sim-grid-config,
+  .sim-grid-exec,
+  .sim-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .sim-mode-strip {
+    gap: 0.45rem;
+  }
+
   .chart-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .topbar {
     flex-direction: column;
     align-items: flex-start;
   }

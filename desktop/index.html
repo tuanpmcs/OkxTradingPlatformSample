@@ -111,29 +111,71 @@
         <div class="chart-head">
           <p>Prediction + Trade Simulator (Prebuilt Model)</p>
         </div>
-        <div class="sim-grid">
-          <label>
-            Account Balance (USD)
-            <input id="sim-account-input" type="text" inputmode="decimal" value="20,000" />
-          </label>
-          <label>
-            Capital (USD)
-            <input id="sim-capital-input" type="text" inputmode="decimal" value="5,000" />
-          </label>
-          <label>
-            Horizon (sec)
-            <input id="sim-horizon-input" type="number" min="1" step="1" value="30" />
-          </label>
-          <label>
-            Auto Range (sec)
-            <input id="sim-range-input" type="number" min="10" step="1" value="60" />
-          </label>
-          <button id="sim-infer-btn" class="btn btn-secondary">Run Inference</button>
-          <button id="sim-open-btn" class="btn btn-primary">Predict + Buy</button>
-          <button id="sim-close-btn" class="btn btn-ghost">Sell Now</button>
-          <button id="sim-auto-start-btn" class="btn btn-primary">Start Auto</button>
-          <button id="sim-auto-stop-btn" class="btn btn-ghost">Stop Auto</button>
-          <button id="sim-account-reset-btn" class="btn btn-ghost">Reset Account</button>
+        <div class="sim-mode-strip">
+          <span id="sim-mode-badge" class="sim-badge">Mode: Market Making</span>
+          <span id="sim-auto-badge" class="sim-badge sim-badge-idle">Auto: OFF</span>
+          <span id="sim-rule-hint" class="sim-rule-hint">Quote both sides, skip adverse windows.</span>
+        </div>
+        <div class="sim-layout">
+          <div class="sim-block">
+            <p class="sim-block-title">Strategy Setup</p>
+            <div class="sim-grid sim-grid-config">
+              <label id="sim-strategy-wrap">
+                <span class="input-title">Strategy</span>
+                <select id="sim-strategy-select">
+                  <option value="market_making">Market Making</option>
+                  <option value="short_term_alpha">Short-Term Alpha</option>
+                </select>
+              </label>
+              <label id="sim-hold-wrap">
+                <span class="input-title">Hold (ms)</span>
+                <input id="sim-hold-ms-input" type="number" min="50" step="50" value="500" />
+              </label>
+              <label id="sim-horizon-wrap">
+                <span class="input-title">Prediction Horizon (sec)</span>
+                <input id="sim-horizon-input" type="number" min="1" step="1" value="30" />
+              </label>
+              <label id="sim-range-wrap">
+                <span class="input-title">Auto Range (sec)</span>
+                <input id="sim-range-input" type="number" min="10" step="1" value="60" />
+              </label>
+              <label id="sim-imbalance-wrap">
+                <span class="input-title">Imbalance Threshold</span>
+                <input id="sim-imbalance-input" type="number" min="0.01" max="1" step="0.01" value="0.2" />
+              </label>
+              <label id="sim-adverse-wrap">
+                <span id="sim-adverse-title" class="input-title">Adverse Filter</span>
+                <input id="sim-adverse-input" type="number" min="0.00001" step="0.00001" value="0.0006" />
+              </label>
+              <label id="sim-min-spread-wrap">
+                <span class="input-title">Min Spread (bps)</span>
+                <input id="sim-min-spread-input" type="number" min="0.1" step="0.1" value="0.8" />
+              </label>
+            </div>
+          </div>
+          <div class="sim-block">
+            <p class="sim-block-title">Account & Execution</p>
+            <div class="sim-grid sim-grid-exec">
+              <label id="sim-account-wrap">
+                <span class="input-title">Account Balance (USD)</span>
+                <input id="sim-account-input" type="text" inputmode="decimal" value="20,000" />
+              </label>
+              <label id="sim-capital-wrap">
+                <span class="input-title">Capital (USD)</span>
+                <input id="sim-capital-input" type="text" inputmode="decimal" value="5,000" />
+              </label>
+            </div>
+            <div class="sim-actions">
+              <button id="sim-preset-fast-btn" class="btn btn-secondary">Alpha Fast</button>
+              <button id="sim-preset-ultra-btn" class="btn btn-secondary">Alpha Ultra</button>
+              <button id="sim-infer-btn" class="btn btn-secondary">Run Inference</button>
+              <button id="sim-open-btn" class="btn btn-primary">Predict + Open</button>
+              <button id="sim-close-btn" class="btn btn-ghost">Close Position</button>
+              <button id="sim-auto-start-btn" class="btn btn-primary">Start Auto</button>
+              <button id="sim-auto-stop-btn" class="btn btn-ghost">Stop Auto</button>
+              <button id="sim-account-reset-btn" class="btn btn-ghost">Reset Account</button>
+            </div>
+          </div>
         </div>
         <div id="sim-summary" class="sim-summary">No prediction yet.</div>
         <div class="sim-metrics">
