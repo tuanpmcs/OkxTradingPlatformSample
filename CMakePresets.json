@@ -90,6 +90,43 @@
       }
     },
     {
+      "name": "config-docker-base",
+      "hidden": true,
+      "inherits": "config-base",
+      "environment": {
+        "VCPKG_ROOT": "/root/vcpkg"
+      },
+      "cacheVariables": {
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets"
+      }
+    },
+    {
+      "name": "x64-linux-release",
+      "displayName": "Config x64 Linux Release",
+      "description": "Release build for Linux x64 in Docker with Ninja and vcpkg",
+      "inherits": [
+        "config-release-linux",
+        "config-docker-base"
+      ],
+      "binaryDir": "${sourceDir}/build/docker/x64-release",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-linux-release"
+      }
+    },
+    {
+      "name": "arm64-linux-release",
+      "displayName": "Config ARM64 Linux Release",
+      "description": "Release build for Linux ARM in Docker with Ninja and vcpkg",
+      "inherits": [
+        "config-release-linux-arm",
+        "config-docker-base"
+      ],
+      "binaryDir": "${sourceDir}/build/docker/arm64-release",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "arm64-linux-release"
+      }
+    },
+    {
       "name": "config-release-windows",
       "displayName": "Config Release Windows",
       "description": "Release build for Windows with Visual Studio 2022 and vcpkg",
@@ -154,6 +191,20 @@
       "displayName": "Build Release Linux ARM",
       "description": "Build Release configuration for Linux ARM",
       "configurePreset": "config-release-linux-arm",
+      "jobs": 1
+    },
+    {
+      "name": "build-x64-linux-release",
+      "displayName": "Build x64 Linux Release",
+      "description": "Build Release Docker configuration for Linux",
+      "configurePreset": "x64-linux-release",
+      "jobs": 1
+    },
+    {
+      "name": "build-arm64-linux-release",
+      "displayName": "Build ARM64 Linux Release",
+      "description": "Build Release Docker configuration for Linux ARM",
+      "configurePreset": "arm64-linux-release",
       "jobs": 1
     },
     {
@@ -258,6 +309,36 @@
         {
           "type": "build",
           "name": "build-release-linux-arm"
+        }
+      ]
+    },
+    {
+      "name": "workflow-x64-linux-release",
+      "displayName": "Workflow x64 Linux Release",
+      "description": "Configure and build Release Docker Linux",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "x64-linux-release"
+        },
+        {
+          "type": "build",
+          "name": "build-x64-linux-release"
+        }
+      ]
+    },
+    {
+      "name": "workflow-arm64-linux-release",
+      "displayName": "Workflow ARM64 Linux Release",
+      "description": "Configure and build Release Docker Linux ARM",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "arm64-linux-release"
+        },
+        {
+          "type": "build",
+          "name": "build-arm64-linux-release"
         }
       ]
     },
