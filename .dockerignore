@@ -1,0 +1,15 @@
+.git
+.gitignore
+agentic_ai_papers.zip
+build
+**/build
+**/.venv
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.DS_Store
+data
+docs
+desktop/chart-widget.js
+desktop/chart-widget-src.jsx
+desktop/lovable-export

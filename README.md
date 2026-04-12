@@ -1,111 +1,157 @@
 # OKX Trading Platform Sample
 
-End-to-end trading stream playground with:
-- C++ market stream bridge (OKX WebSocket -> gRPC stream)
-- Electron desktop UI (multi-channel live view + simulator + local chart)
-- Python ML pipeline (train/infer/prediction gRPC service)
+An end-to-end sample project for real-time market data streaming and local inference:
 
-## Architecture
+- `backend-cpp`: a C++ backend that reads OKX WebSocket data and republishes it as a gRPC stream
+- `inference-python`: a Python gRPC service for model inference
+- `web-gateway`: an HTTP gateway that forwards prediction requests to the inference service
+- `desktop/`: an Electron frontend for stream monitoring, charts, predictions, and trading simulation
+
+## Architecture Overview
 
 ![Architecture](docs/architecture.drawio.svg)
 
-Diagram files:
-- `docs/architecture.drawio` (open/edit with draw.io)
-- `docs/architecture.drawio.svg` (preview/export)
+Diagram file:
 
-## Component Map
+- [docs/architecture.drawio.svg](docs/architecture.drawio.svg)
 
-### 1) C++ stream backend
-- File: `main.cpp`
-- Connects to OKX WebSocket channels.
-- Parses payloads with `simdjson` and normalizes fields.
-- Computes per-tick `change` and `changed_fields`.
-- Publishes ticks via gRPC `MarketData.Subscribe`.
-- Handles graceful shutdown with signal handlers (`SIGINT`, `SIGTERM`).
+## Main Components
 
-Default server:
-- `127.0.0.1:50051`
+### 1. Backend C++
 
-### 2) gRPC contracts
-- File: `proto/market_data.proto`
-- Services:
+- Main file: [main.cpp](main.cpp)
+- Connects to OKX public and business channels
+- Parses payloads with `simdjson`
+- Normalizes ticks and publishes them through `MarketData.Subscribe`
+- In Docker, the service binds to `0.0.0.0:50051`
+- From the host machine or the desktop app, connect with `grpc://127.0.0.1:50051`
+
+### 2. gRPC Contract
+
+- Proto file: [proto/market_data.proto](proto/market_data.proto)
+- Main services:
   - `MarketData.Subscribe(SubscribeRequest) returns (stream Tick)`
   - `PredictionService.Predict(PredictRequest) returns (PredictResponse)`
-- `Tick` includes:
-  - `ts`, `price`, `change`, `fields`, `changed_fields`
 
-### 3) Electron desktop
-- Files: `desktop/main.js`, `desktop/renderer.js`, `desktop/index.html`, `desktop/styles.css`
-- `main.js`:
-  - Connects to C++ gRPC stream
-  - Supports multiple subscriptions (`channel + symbol` rows)
-  - Batches points to renderer for smoother UI
-  - Connects to Python `PredictionService` gRPC
-- `renderer.js`:
-  - Displays per-channel change cards
-  - Maintains local series per `channel:symbol`
-  - Draws local gRPC chart (UTC time axis)
-  - Runs auto-trading simulation (buy/sell/hold loop)
-  - Tracks account state: `cash`, `equity`, `lastAction`
+### 3. Python Inference
 
-### 4) Python ML pipeline
-- Folder: `ml_pipeline/`
-- Training:
-  - `train_model.py` (linear)
-  - `train_better_model.py` (tree, recommended baseline)
-  - `train_lstm_model.py` (sequence model)
-- Serving:
-  - `prediction_server.py` loads `.json`, `.joblib`, or `.pt` and serves gRPC
-- Utilities:
-  - `collect_ticks_from_grpc.py` to collect trades + order-book rows from live stream
-  - `build_realtime_features.py` to build real-time style feature rows
-  - `create_future_labels.py` to create future-Δt supervised labels
-  - `simulate_strategy.py` with `market_making` and `short_term_alpha` modes
-  - `predict_client.py` for direct prediction smoke test
+- Folder: [ml_pipeline](ml_pipeline)
+- Server: [prediction_server.py](ml_pipeline/prediction_server.py)
+- Default model in Docker Compose:
+  - `/app/models/pulse_tree_v1.joblib`
+- Default port:
+  - `127.0.0.1:50061`
 
-## Runtime Data Flow
+### 4. Web Gateway
 
-1. C++ subscribes to OKX channels and receives live updates.
-2. C++ parses/normalizes and emits `Tick` on gRPC stream.
-3. Electron main subscribes to one or more `channel:symbol` streams.
-4. Renderer updates stats/cards/charts by channel.
-5. For inference, renderer sends recent points to Electron main.
-6. Electron main calls Python `PredictionService.Predict`.
-7. Prediction response feeds simulator decision logic (`BUY/HOLD`, horizon-based sell/re-entry).
+- Dockerfile: [deploy/containers/Dockerfile.web-gateway](deploy/containers/Dockerfile.web-gateway)
+- Compose service: `web-gateway`
+- Port:
+  - `http://127.0.0.1:8080`
+- Purpose:
+  - exposes HTTP endpoints such as `/health` and `/predict`
+- Note:
+  - this is not the visual frontend
 
-## Suggested Startup Order
+### 5. Electron Frontend
 
-1. Build/run C++ stream server (port `50051`).
-2. Start Python prediction server (port `50061`).
-3. Start Electron app and connect stream.
-4. Enable auto-trading in UI with horizon >= 1s.
+- Folder: [desktop](desktop)
+- Main entry points:
+  - [desktop/main.js](desktop/main.js)
+  - [desktop/renderer.js](desktop/renderer.js)
+  - [desktop/index.html](desktop/index.html)
+- Default frontend connections:
+  - stream backend: `grpc://127.0.0.1:50051`
+  - prediction service: `127.0.0.1:50061`
 
-## Quick Commands
+## Data Flow
 
-### C++ backend
+1. `backend-cpp` connects to OKX WebSocket and receives market events.
+2. The backend normalizes the data and publishes it through the `MarketData.Subscribe` gRPC stream.
+3. The Electron app subscribes to the stream at `127.0.0.1:50051`.
+4. When predictions are needed, Electron calls `PredictionService.Predict` at `127.0.0.1:50061`.
+5. `web-gateway` provides an additional HTTP API for testing or external integration.
+
+## Quick Start With Docker Compose
+
+Start the three backend services:
+
+```bash
+docker compose -f deploy/containers/docker-compose.yml up --build
+```
+
+Once started, the exposed ports are:
+
+- `backend-cpp`: `127.0.0.1:50051`
+- `inference-python`: `127.0.0.1:50061`
+- `web-gateway`: `127.0.0.1:8080`
+
+Check the gateway:
+
+```bash
+curl http://127.0.0.1:8080/health
+```
+
+## Launch The Desktop Frontend
+
+The frontend is not part of Docker Compose. After the three services above are running, launch the Electron app in another terminal:
+
+```bash
+cd /Volumes/Dev/Workspace/okx_trading_platform_sample/desktop
+npm install
+npm start
+```
+
+In the app, use this stream URL:
+
+```text
+grpc://127.0.0.1:50051
+```
+
+## Run Locally Without Docker
+
+### Backend C++
+
 ```bash
 cmake --build --preset build-debug-osx -j
 ./build/osx/debug/bin/hello_world --grpc-port 50051
 ```
 
-### Python prediction server
+### Python Inference
+
 ```bash
 cd ml_pipeline
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python prediction_server.py --model ../models/pulse_lstm_v1.pt --host 127.0.0.1 --port 50061
+python prediction_server.py --model ../models/pulse_tree_v1.joblib --host 127.0.0.1 --port 50061
 ```
 
-### Electron app
+### Desktop Electron
+
 ```bash
 cd desktop
 npm install
-PRED_GRPC_TARGET=127.0.0.1:50061 npm start
+npm start
+```
+
+## Repository Layout
+
+```text
+.
+├── main.cpp
+├── proto/
+├── ml_pipeline/
+├── desktop/
+├── deploy/
+│   └── containers/
+├── docs/
+└── models/
 ```
 
 ## Notes
 
-- If `PredictionService` is down, inference calls fail with `UNAVAILABLE` (connection refused).
-- If stream stop is intentional, client-side `CANCELLED` from gRPC should be treated as normal shutdown noise.
-- For lower UI latency, keep subscription set focused (avoid unnecessary channels per session).
+- `web-gateway` is only an HTTP API and does not provide the UI.
+- The first Docker build for `backend-cpp` can take a while because it compiles C++ dependencies.
+- The Docker build for `backend-cpp` is now more cache-friendly, but changing `vcpkg.json`, `Dockerfile.backend-cpp`, or the custom triplets will still invalidate the dependency layer.
+- If the desktop app cannot connect to the stream, check the `backend-cpp` container logs and confirm that port `50051` is published.

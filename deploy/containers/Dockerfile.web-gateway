@@ -1,0 +1,14 @@
+FROM node:20-slim
+
+WORKDIR /app
+COPY deploy/containers/gateway/package.json ./package.json
+RUN npm install --omit=dev
+
+COPY deploy/containers/gateway/server.js ./server.js
+COPY proto ./proto
+
+ENV PORT=8080
+ENV PRED_GRPC_TARGET=inference-python:50061
+
+EXPOSE 8080
+CMD ["npm", "start"]

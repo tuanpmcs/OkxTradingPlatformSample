@@ -1109,7 +1109,7 @@ public:
 	void start()
 	{
 		grpc::ServerBuilder builder;
-		const std::string	address = "127.0.0.1:" + std::to_string(_port);
+		const std::string	address = "0.0.0.0:" + std::to_string(_port);
 		builder.AddListeningPort(address, grpc::InsecureServerCredentials());
 		builder.RegisterService(&_service);
 		_server = builder.BuildAndStart();
@@ -1322,7 +1322,7 @@ websocket_endpoint:
 		{
 			grpc_server = std::make_unique<GrpcServerRuntime>(grpc_service, grpc_port);
 			grpc_server->start();
-			LOG_STREAM_INFO("gRPC stream server listening on 127.0.0.1:" << grpc_port);
+			LOG_STREAM_INFO("gRPC stream server listening on 0.0.0.0:" << grpc_port);
 		}
 		catch (const std::exception& e)
 		{

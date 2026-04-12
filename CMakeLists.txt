@@ -13,12 +13,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CheckCXXCompilerFlag)
 check_cxx_compiler_flag("-std=c++2c" COMPILER_SUPPORTS_CXX2C)
+option(HELLO_WORLD_REQUIRE_CXX26 "Fail configuration when C++26/C++2c is unavailable" OFF)
+
 if(COMPILER_SUPPORTS_CXX2C)
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-std=c++2c>)
 elseif(MSVC)
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/std:c++latest>)
-else()
+elseif(HELLO_WORLD_REQUIRE_CXX26)
     message(FATAL_ERROR "C++26/C++2c mode is not supported by the current compiler.")
+else()
+    message(STATUS "C++26/C++2c mode is unavailable; building with C++23.")
 endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -31,6 +35,8 @@ string(SUBSTRING "${GIT_SHA}" 0 8 GIT_SHORT_SHA)
 if(MSVC)
     add_compile_options(/bigobj)
 endif()
+
+option(HELLO_WORLD_BUILD_BENCHMARKS "Build benchmark targets" OFF)
 
 add_executable(hello_world
     main.cpp
@@ -45,7 +51,6 @@ find_package(simdjson CONFIG REQUIRED)
 find_package(Protobuf CONFIG REQUIRED)
 find_package(gRPC CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
-find_package(benchmark CONFIG REQUIRED)
 
 set(PROTO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/proto/market_data.proto)
 set(PROTO_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
@@ -93,16 +98,20 @@ target_compile_definitions(hello_world PRIVATE
     GIT_SHORT_SHA="${GIT_SHORT_SHA}"
 )
 
-add_executable(main_bench
-    benchmarks/main_benchmark.cpp
-)
+if(HELLO_WORLD_BUILD_BENCHMARKS)
+    find_package(benchmark CONFIG REQUIRED)
 
-target_link_libraries(main_bench PRIVATE
-    benchmark::benchmark
-)
+    add_executable(main_bench
+        benchmarks/main_benchmark.cpp
+    )
 
-target_compile_definitions(main_bench PRIVATE
-    HELLO_WORLD_BENCH_CMD="$<TARGET_FILE:hello_world> --bench-main > /dev/null 2>&1"
-)
+    target_link_libraries(main_bench PRIVATE
+        benchmark::benchmark
+    )
 
-add_dependencies(main_bench hello_world)
+    target_compile_definitions(main_bench PRIVATE
+        HELLO_WORLD_BENCH_CMD="$<TARGET_FILE:hello_world> --bench-main > /dev/null 2>&1"
+    )
+
+    add_dependencies(main_bench hello_world)
+endif()

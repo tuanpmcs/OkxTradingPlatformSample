@@ -64,6 +64,58 @@
         "CMAKE_MAKE_PROGRAM": "/opt/homebrew/bin/ninja",
         "VCPKG_TARGET_TRIPLET": "arm64-osx"
       }
+    },
+    {
+      "name": "config-release-linux",
+      "displayName": "Config Release Linux",
+      "description": "Release build for Linux x64 with Ninja and vcpkg",
+      "inherits": "config-base",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-dynamic"
+      }
+    },
+    {
+      "name": "config-release-linux-arm",
+      "displayName": "Config Release Linux ARM",
+      "description": "Release build for Linux ARM with Ninja and vcpkg",
+      "inherits": "config-base",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux/arm/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VCPKG_TARGET_TRIPLET": "arm64-linux-dynamic"
+      }
+    },
+    {
+      "name": "config-release-windows",
+      "displayName": "Config Release Windows",
+      "description": "Release build for Windows with Visual Studio 2022 and vcpkg",
+      "inherits": "config-base",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/windows/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "config-release-osx",
+      "displayName": "Config Release MacOS",
+      "description": "Release build for MacOS with Ninja and vcpkg",
+      "inherits": "config-base",
+      "environment": {
+        "CC": "/usr/bin/clang",
+        "CXX": "/usr/bin/clang++"
+      },
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/osx/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_MAKE_PROGRAM": "/opt/homebrew/bin/ninja",
+        "VCPKG_TARGET_TRIPLET": "arm64-osx"
+      }
     }
   ],
   "buildPresets": [
@@ -89,6 +141,33 @@
     {
       "name": "build-debug-osx",
       "configurePreset": "config-debug-osx"
+    },
+    {
+      "name": "build-release-linux",
+      "displayName": "Build Release Linux",
+      "description": "Build Release configuration for Linux",
+      "configurePreset": "config-release-linux",
+      "jobs": 1
+    },
+    {
+      "name": "build-release-linux-arm",
+      "displayName": "Build Release Linux ARM",
+      "description": "Build Release configuration for Linux ARM",
+      "configurePreset": "config-release-linux-arm",
+      "jobs": 1
+    },
+    {
+      "name": "build-release-windows",
+      "displayName": "Build Release Windows",
+      "description": "Build Release configuration for Windows",
+      "configurePreset": "config-release-windows",
+      "configuration": "Release"
+    },
+    {
+      "name": "build-release-osx",
+      "displayName": "Build Release MacOS",
+      "description": "Build Release configuration for MacOS",
+      "configurePreset": "config-release-osx"
     }
   ],
   "workflowPresets": [
@@ -149,6 +228,66 @@
         {
           "type": "build",
           "name": "build-debug-osx"
+        }
+      ]
+    },
+    {
+      "name": "ci-release-linux",
+      "displayName": "Workflow Release Linux",
+      "description": "Configure and build Release Linux",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "config-release-linux"
+        },
+        {
+          "type": "build",
+          "name": "build-release-linux"
+        }
+      ]
+    },
+    {
+      "name": "ci-release-linux-arm",
+      "displayName": "Workflow Release Linux ARM",
+      "description": "Configure and build Release Linux ARM",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "config-release-linux-arm"
+        },
+        {
+          "type": "build",
+          "name": "build-release-linux-arm"
+        }
+      ]
+    },
+    {
+      "name": "ci-release-windows",
+      "displayName": "Workflow Release Windows",
+      "description": "Configure and build Release Windows",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "config-release-windows"
+        },
+        {
+          "type": "build",
+          "name": "build-release-windows"
+        }
+      ]
+    },
+    {
+      "name": "ci-release-osx",
+      "displayName": "Workflow Release MacOS",
+      "description": "Configure and build Release MacOS",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "config-release-osx"
+        },
+        {
+          "type": "build",
+          "name": "build-release-osx"
         }
       ]
     }

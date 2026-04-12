@@ -7,7 +7,7 @@ project(
     LANGUAGES C CXX
 )
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -39,7 +39,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Boost::multiprecision
     Boost::url
     fmt::fmt
-    nlohmann_json::nlohmann_json
+    simdjson::simdjson
     OpenSSL::SSL
     OpenSSL::Crypto
     spdlog::spdlog

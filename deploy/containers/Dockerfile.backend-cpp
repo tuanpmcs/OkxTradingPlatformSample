@@ -1,0 +1,63 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV VCPKG_ROOT=/root/vcpkg
+WORKDIR /app
+
+ARG TARGETARCH
+
+# Install dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    git \
+    curl \
+    build-essential \
+    cmake \
+    ninja-build \
+    zip \
+    unzip \
+    pkg-config \
+    && update-ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install vcpkg expected by CMake presets
+RUN git clone --depth=1 https://github.com/microsoft/vcpkg.git ${VCPKG_ROOT} \
+    && ${VCPKG_ROOT}/bootstrap-vcpkg.sh -disableMetrics
+
+# Copy only dependency manifests first so normal source edits keep this layer cached.
+COPY vcpkg.json vcpkg-configuration.json ./
+COPY vcpkg-triplets ./vcpkg-triplets
+
+RUN case "${TARGETARCH}" in \
+        arm64) VCPKG_TARGET_TRIPLET="arm64-linux-release" ;; \
+        amd64) VCPKG_TARGET_TRIPLET="x64-linux-release" ;; \
+        *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && ${VCPKG_ROOT}/vcpkg install \
+        --overlay-triplets=/app/vcpkg-triplets \
+        --triplet "${VCPKG_TARGET_TRIPLET}" \
+        --clean-after-build
+
+# Copy the project only after dependency installation so app-only changes rebuild faster.
+COPY CMakeLists.txt CMakePresets.json main.cpp ./
+COPY proto ./proto
+
+# Build
+RUN case "${TARGETARCH}" in \
+        arm64) \
+            VCPKG_TARGET_TRIPLET="arm64-linux-release" ;; \
+        amd64) \
+            VCPKG_TARGET_TRIPLET="x64-linux-release" ;; \
+        *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && cmake -S /app -B /app/build/docker-release -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake \
+        -DVCPKG_OVERLAY_TRIPLETS=/app/vcpkg-triplets \
+        -DVCPKG_TARGET_TRIPLET="${VCPKG_TARGET_TRIPLET}" \
+        -DHELLO_WORLD_BUILD_BENCHMARKS=OFF \
+    && cmake --build /app/build/docker-release --parallel \
+    && cp /app/build/docker-release/bin/hello_world /usr/local/bin/hello_world
+
+EXPOSE 50051
+CMD ["/usr/local/bin/hello_world", "--grpc-port", "50051"]
