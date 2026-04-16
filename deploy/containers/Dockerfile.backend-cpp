@@ -1,59 +1,78 @@
-FROM ubuntu:24.04
+# syntax=docker/dockerfile:1.7
+# STAGE 1: Build dependencies and app
+FROM mcr.microsoft.com/devcontainers/cpp:1-ubuntu-24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV VCPKG_ROOT=/root/vcpkg
+ENV VCPKG_ROOT=/usr/local/vcpkg
+# VCPKG_BINARY_SOURCES is the modern way to control caching
+ENV VCPKG_BINARY_SOURCES="clear;files,/root/.cache/vcpkg/archives,readwrite"
+
 WORKDIR /app
-
 ARG TARGETARCH
+ARG REINSTALL_CMAKE_VERSION_FROM_SOURCE=3.30.6
+ARG VCPKG_MAX_CONCURRENCY=1
 
-# Install dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    git \
-    curl \
-    build-essential \
-    cmake \
-    ninja-build \
-    zip \
-    unzip \
-    pkg-config \
-    && update-ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# 1. Reinstall CMake if requested
+COPY deploy/containers/reinstall-cmake.sh /tmp/reinstall-cmake.sh
+RUN if [ "${REINSTALL_CMAKE_VERSION_FROM_SOURCE}" != "none" ]; then \
+        chmod +x /tmp/reinstall-cmake.sh && /tmp/reinstall-cmake.sh "${REINSTALL_CMAKE_VERSION_FROM_SOURCE}"; \
+    fi && rm -f /tmp/reinstall-cmake.sh
 
-# Install vcpkg expected by CMake presets
-RUN git clone --depth=1 https://github.com/microsoft/vcpkg.git ${VCPKG_ROOT} \
-    && ${VCPKG_ROOT}/bootstrap-vcpkg.sh -disableMetrics
-
-# Copy only dependency manifests first so normal source edits keep this layer cached.
+# 2. Dependency Metadata (Separated to leverage layer caching)
 COPY vcpkg.json vcpkg-configuration.json ./
 COPY vcpkg-triplets ./vcpkg-triplets
-
-RUN case "${TARGETARCH}" in \
-        arm64) VCPKG_TARGET_TRIPLET="arm64-linux-release" ;; \
-        amd64) VCPKG_TARGET_TRIPLET="x64-linux-release" ;; \
-        x64) VCPKG_TARGET_TRIPLET="x64-linux-release" ;; \
-        *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac \
-    && ${VCPKG_ROOT}/vcpkg install \
-        --overlay-triplets=/app/vcpkg-triplets \
-        --triplet "${VCPKG_TARGET_TRIPLET}"
-
-# Copy the project only after dependency installation so app-only changes rebuild faster.
 COPY CMakeLists.txt CMakePresets.json main.cpp ./
 COPY proto ./proto
 
-# Build
-RUN case "${TARGETARCH}" in \
-        arm64) \
-            CMAKE_WORKFLOW_PRESET="workflow-arm64-linux-release"; \
-            CMAKE_BINARY_DIR="/app/build/docker/arm64-release" ;; \
-        amd64) \
-            CMAKE_WORKFLOW_PRESET="workflow-x64-linux-release"; \
-            CMAKE_BINARY_DIR="/app/build/docker/x64-release" ;; \
-        *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+# 3. Configure & Install Dependencies
+# Using unique id for TARGETARCH prevents cache corruption between arm64/amd64.
+# Keep dependency builds single-threaded in Docker to avoid grpc/vcpkg OOM fallbacks.
+RUN --mount=type=cache,target=/usr/local/vcpkg/downloads \
+    --mount=type=cache,id=vcpkg-archives-${TARGETARCH},target=/root/.cache/vcpkg/archives \
+    case "${TARGETARCH}" in \
+        arm64) CONFIG_PRESET="arm64-linux-dynamic-rel" ;; \
+        amd64|x64) CONFIG_PRESET="x64-linux-dynamic-rel" ;; \
+        *) exit 1 ;; \
     esac \
-    && cmake --workflow --preset "${CMAKE_WORKFLOW_PRESET}" \
-    && cp "${CMAKE_BINARY_DIR}/bin/hello_world" /usr/local/bin/hello_world
+    && VCPKG_MAX_CONCURRENCY="${VCPKG_MAX_CONCURRENCY}" CMAKE_BUILD_PARALLEL_LEVEL=1 cmake --preset "${CONFIG_PRESET}"
+
+# 4. Build
+RUN --mount=type=cache,id=vcpkg-archives-${TARGETARCH},target=/root/.cache/vcpkg/archives \
+    case "${TARGETARCH}" in \
+        arm64) BUILD_PRESET="arm64-linux-dynamic-rel"; BUILD_DIR="/app/build/arm64-linux-dynamic/release"; VCPKG_TRIPLET="arm64-linux-dynamic" ;; \
+        amd64|x64) BUILD_PRESET="x64-linux-dynamic-rel"; BUILD_DIR="/app/build/x64-linux-dynamic/release"; VCPKG_TRIPLET="x64-linux-dynamic" ;; \
+        *) echo "Unsupported TARGETARCH=${TARGETARCH}" && exit 1 ;; \
+    esac \
+    && cmake --build --preset "${BUILD_PRESET}" --parallel \
+    && mkdir -p /opt/app/bin /opt/app/lib \
+    && cp -av "${BUILD_DIR}/bin/hello_world" /opt/app/bin/hello_world \
+    && if [ -d "${BUILD_DIR}/lib" ]; then cp -av "${BUILD_DIR}/lib/." /opt/app/lib/; fi \
+    && for VCPKG_LIB_DIR in \
+        "${BUILD_DIR}/vcpkg_installed/${VCPKG_TRIPLET}/lib" \
+        "/app/vcpkg_installed/${VCPKG_TRIPLET}/lib"; do \
+        if [ -d "${VCPKG_LIB_DIR}" ]; then \
+            find "${VCPKG_LIB_DIR}" -maxdepth 1 -type f -name "*.so*" -exec cp -av "{}" /opt/app/lib/ \; ; \
+            find "${VCPKG_LIB_DIR}" -maxdepth 1 -type l -name "*.so*" -exec cp -avP "{}" /opt/app/lib/ \; ; \
+        fi; \
+    done
+
+# STAGE 2: Lightweight Production Image
+FROM ubuntu:24.04 AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/app
+
+COPY --from=builder /opt/app/bin/ /opt/app/bin/
+COPY --from=builder /opt/app/lib/ /opt/app/lib/
+
+# Ensure the runtime linker can discover bundled shared libraries.
+ENV LD_LIBRARY_PATH=/opt/app/lib:${LD_LIBRARY_PATH}
+RUN echo "/opt/app/lib" > /etc/ld.so.conf.d/opt-app.conf && ldconfig
 
 EXPOSE 50051
-CMD ["/usr/local/bin/hello_world", "--grpc-port", "50051"]
+ENTRYPOINT ["/opt/app/bin/hello_world"]
+CMD ["--grpc-port", "50051"]

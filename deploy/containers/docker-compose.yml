@@ -5,6 +5,10 @@ services:
       dockerfile: deploy/containers/Dockerfile.backend-cpp
     image: okx-trading/backend-cpp:local
     container_name: backend-cpp
+    volumes:
+      - .:/app
+      - vcpkg-cache:/usr/local/vcpkg
+      - build-cache:/app/build
     ports:
       - "50051:50051"
     restart: unless-stopped
@@ -39,3 +43,7 @@ services:
     depends_on:
       - inference-python
     restart: unless-stopped
+
+volumes:
+  vcpkg-cache:
+  build-cache:

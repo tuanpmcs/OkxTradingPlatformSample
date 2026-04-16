@@ -2,374 +2,99 @@
   "version": 6,
   "configurePresets": [
     {
-      "name": "config-base",
-      "hidden": true,
-      "displayName": "Base Configuration",
-      "description": "Base configuration for all platforms",
-      "environment": {
-        "VCPKG_ROOT": "$penv{HOME}/vcpkg"
-      },
-      "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-      }
-    },
-    {
-      "name": "config-debug-linux",
-      "displayName": "Config Debug Linux",
-      "description": "Debug build for Linux x64 with Ninja and vcpkg",
-      "inherits": "config-base",
+      "name": "arm64-linux-dynamic-dbg",
+      "binaryDir": "build/arm64-linux-dynamic/debug",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/linux/debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "VCPKG_TARGET_TRIPLET": "x64-linux-dynamic"
-      }
-    },
-    {
-      "name": "config-debug-linux-arm",
-      "displayName": "Config Debug Linux ARM",
-      "description": "Debug build for Linux ARM with Ninja and vcpkg",
-      "inherits": "config-base",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/linux/arm/debug",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "arm64-linux-dynamic"
       }
     },
     {
-      "name": "config-debug-windows",
-      "displayName": "Config Debug Windows",
-      "description": "Debug build for Windows with Visual Studio 2022 and vcpkg",
-      "inherits": "config-base",
-      "generator": "Visual Studio 17 2022",
-      "binaryDir": "${sourceDir}/build/windows/debug",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
-      }
-    },
-    {
-      "name": "config-debug-osx",
-      "displayName": "Config Debug MacOS",
-      "description": "Debug build for MacOS with Ninja and vcpkg",
-      "inherits": "config-base",
-      "environment": {
-        "CC": "/usr/bin/clang",
-        "CXX": "/usr/bin/clang++"
-      },
+      "name": "arm64-linux-dynamic-rel",
+      "binaryDir": "build/arm64-linux-dynamic/release",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/osx/debug",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_MAKE_PROGRAM": "/opt/homebrew/bin/ninja",
-        "VCPKG_TARGET_TRIPLET": "arm64-osx"
-      }
-    },
-    {
-      "name": "config-release-linux",
-      "displayName": "Config Release Linux",
-      "description": "Release build for Linux x64 with Ninja and vcpkg",
-      "inherits": "config-base",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/linux/release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "VCPKG_TARGET_TRIPLET": "x64-linux-dynamic"
-      }
-    },
-    {
-      "name": "config-release-linux-arm",
-      "displayName": "Config Release Linux ARM",
-      "description": "Release build for Linux ARM with Ninja and vcpkg",
-      "inherits": "config-base",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/linux/arm/release",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
         "VCPKG_TARGET_TRIPLET": "arm64-linux-dynamic"
       }
     },
     {
-      "name": "config-docker-base",
-      "hidden": true,
-      "inherits": "config-base",
-      "environment": {
-        "VCPKG_ROOT": "/root/vcpkg"
-      },
-      "cacheVariables": {
-        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets"
-      }
-    },
-    {
-      "name": "x64-linux-release",
-      "displayName": "Config x64 Linux Release",
-      "description": "Release build for Linux x64 in Docker with Ninja and vcpkg",
-      "inherits": [
-        "config-release-linux",
-        "config-docker-base"
-      ],
-      "binaryDir": "${sourceDir}/build/docker/x64-release",
-      "cacheVariables": {
-        "VCPKG_TARGET_TRIPLET": "x64-linux-release"
-      }
-    },
-    {
-      "name": "arm64-linux-release",
-      "displayName": "Config ARM64 Linux Release",
-      "description": "Release build for Linux ARM in Docker with Ninja and vcpkg",
-      "inherits": [
-        "config-release-linux-arm",
-        "config-docker-base"
-      ],
-      "binaryDir": "${sourceDir}/build/docker/arm64-release",
-      "cacheVariables": {
-        "VCPKG_TARGET_TRIPLET": "arm64-linux-release"
-      }
-    },
-    {
-      "name": "config-release-windows",
-      "displayName": "Config Release Windows",
-      "description": "Release build for Windows with Visual Studio 2022 and vcpkg",
-      "inherits": "config-base",
-      "generator": "Visual Studio 17 2022",
-      "binaryDir": "${sourceDir}/build/windows/release",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
-      }
-    },
-    {
-      "name": "config-release-osx",
-      "displayName": "Config Release MacOS",
-      "description": "Release build for MacOS with Ninja and vcpkg",
-      "inherits": "config-base",
-      "environment": {
-        "CC": "/usr/bin/clang",
-        "CXX": "/usr/bin/clang++"
-      },
+      "name": "x64-linux-dynamic-dbg",
+      "binaryDir": "build/x64-linux-dynamic/debug",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/osx/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-dynamic"
+      }
+    },
+    {
+      "name": "x64-linux-dynamic-rel",
+      "binaryDir": "build/x64-linux-dynamic/release",
+      "generator": "Ninja",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_MAKE_PROGRAM": "/opt/homebrew/bin/ninja",
-        "VCPKG_TARGET_TRIPLET": "arm64-osx"
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-dynamic"
       }
     }
   ],
+
   "buildPresets": [
     {
-      "name": "build-debug-linux",
-      "displayName": "Build Debug Linux",
-      "description": "Build Debug configuration for Linux",
-      "configurePreset": "config-debug-linux"
+      "name": "arm64-linux-dynamic-dbg",
+      "configurePreset": "arm64-linux-dynamic-dbg",
+      "jobs": 2
     },
     {
-      "name": "build-debug-linux-arm",
-      "displayName": "Build Debug Linux ARM",
-      "description": "Build Debug configuration for Linux ARM",
-      "configurePreset": "config-debug-linux-arm"
+      "name": "arm64-linux-dynamic-rel",
+      "configurePreset": "arm64-linux-dynamic-rel",
+      "jobs": 2
     },
     {
-      "name": "build-debug-windows",
-      "displayName": "Build Debug Windows",
-      "description": "Build Debug configuration for Windows",
-      "configurePreset": "config-debug-windows",
-      "configuration": "Debug"
+      "name": "x64-linux-dynamic-dbg",
+      "configurePreset": "x64-linux-dynamic-dbg",
+      "jobs": 2
     },
     {
-      "name": "build-debug-osx",
-      "configurePreset": "config-debug-osx"
-    },
-    {
-      "name": "build-release-linux",
-      "displayName": "Build Release Linux",
-      "description": "Build Release configuration for Linux",
-      "configurePreset": "config-release-linux",
-      "jobs": 1
-    },
-    {
-      "name": "build-release-linux-arm",
-      "displayName": "Build Release Linux ARM",
-      "description": "Build Release configuration for Linux ARM",
-      "configurePreset": "config-release-linux-arm",
-      "jobs": 1
-    },
-    {
-      "name": "build-x64-linux-release",
-      "displayName": "Build x64 Linux Release",
-      "description": "Build Release Docker configuration for Linux",
-      "configurePreset": "x64-linux-release",
-      "jobs": 1
-    },
-    {
-      "name": "build-arm64-linux-release",
-      "displayName": "Build ARM64 Linux Release",
-      "description": "Build Release Docker configuration for Linux ARM",
-      "configurePreset": "arm64-linux-release",
-      "jobs": 1
-    },
-    {
-      "name": "build-release-windows",
-      "displayName": "Build Release Windows",
-      "description": "Build Release configuration for Windows",
-      "configurePreset": "config-release-windows",
-      "configuration": "Release"
-    },
-    {
-      "name": "build-release-osx",
-      "displayName": "Build Release MacOS",
-      "description": "Build Release configuration for MacOS",
-      "configurePreset": "config-release-osx"
+      "name": "x64-linux-dynamic-rel",
+      "configurePreset": "x64-linux-dynamic-rel",
+      "jobs": 2
     }
   ],
+
   "workflowPresets": [
     {
-      "name": "ci-debug-linux",
-      "displayName": "Workflow Debug Linux",
-      "description": "Configure and build Debug Linux",
+      "name": "ci-arm64-linux-dynamic-dbg",
       "steps": [
-        {
-          "type": "configure",
-          "name": "config-debug-linux"
-        },
-        {
-          "type": "build",
-          "name": "build-debug-linux"
-        }
+        { "type": "configure", "name": "arm64-linux-dynamic-dbg" },
+        { "type": "build", "name": "arm64-linux-dynamic-dbg" }
       ]
     },
     {
-      "name": "ci-debug-linux-arm",
-      "displayName": "Workflow Debug Linux ARM",
-      "description": "Configure and build Debug Linux ARM",
+      "name": "ci-arm64-linux-dynamic-rel",
       "steps": [
-        {
-          "type": "configure",
-          "name": "config-debug-linux-arm"
-        },
-        {
-          "type": "build",
-          "name": "build-debug-linux-arm"
-        }
+        { "type": "configure", "name": "arm64-linux-dynamic-rel" },
+        { "type": "build", "name": "arm64-linux-dynamic-rel" }
       ]
     },
     {
-      "name": "ci-debug-windows",
-      "displayName": "Workflow Debug Windows",
-      "description": "Configure and build Debug Windows",
+      "name": "ci-x64-linux-dynamic-dbg",
       "steps": [
-        {
-          "type": "configure",
-          "name": "config-debug-windows"
-        },
-        {
-          "type": "build",
-          "name": "build-debug-windows"
-        }
+        { "type": "configure", "name": "x64-linux-dynamic-dbg" },
+        { "type": "build", "name": "x64-linux-dynamic-dbg" }
       ]
     },
     {
-      "name": "ci-debug-osx",
-      "displayName": "Workflow Debug MacOS",
-      "description": "Configure and build Debug MacOS",
+      "name": "ci-x64-linux-dynamic-rel",
       "steps": [
-        {
-          "type": "configure",
-          "name": "config-debug-osx"
-        },
-        {
-          "type": "build",
-          "name": "build-debug-osx"
-        }
-      ]
-    },
-    {
-      "name": "ci-release-linux",
-      "displayName": "Workflow Release Linux",
-      "description": "Configure and build Release Linux",
-      "steps": [
-        {
-          "type": "configure",
-          "name": "config-release-linux"
-        },
-        {
-          "type": "build",
-          "name": "build-release-linux"
-        }
-      ]
-    },
-    {
-      "name": "ci-release-linux-arm",
-      "displayName": "Workflow Release Linux ARM",
-      "description": "Configure and build Release Linux ARM",
-      "steps": [
-        {
-          "type": "configure",
-          "name": "config-release-linux-arm"
-        },
-        {
-          "type": "build",
-          "name": "build-release-linux-arm"
-        }
-      ]
-    },
-    {
-      "name": "workflow-x64-linux-release",
-      "displayName": "Workflow x64 Linux Release",
-      "description": "Configure and build Release Docker Linux",
-      "steps": [
-        {
-          "type": "configure",
-          "name": "x64-linux-release"
-        },
-        {
-          "type": "build",
-          "name": "build-x64-linux-release"
-        }
-      ]
-    },
-    {
-      "name": "workflow-arm64-linux-release",
-      "displayName": "Workflow ARM64 Linux Release",
-      "description": "Configure and build Release Docker Linux ARM",
-      "steps": [
-        {
-          "type": "configure",
-          "name": "arm64-linux-release"
-        },
-        {
-          "type": "build",
-          "name": "build-arm64-linux-release"
-        }
-      ]
-    },
-    {
-      "name": "ci-release-windows",
-      "displayName": "Workflow Release Windows",
-      "description": "Configure and build Release Windows",
-      "steps": [
-        {
-          "type": "configure",
-          "name": "config-release-windows"
-        },
-        {
-          "type": "build",
-          "name": "build-release-windows"
-        }
-      ]
-    },
-    {
-      "name": "ci-release-osx",
-      "displayName": "Workflow Release MacOS",
-      "description": "Configure and build Release MacOS",
-      "steps": [
-        {
-          "type": "configure",
-          "name": "config-release-osx"
-        },
-        {
-          "type": "build",
-          "name": "build-release-osx"
-        }
+        { "type": "configure", "name": "x64-linux-dynamic-rel" },
+        { "type": "build", "name": "x64-linux-dynamic-rel" }
       ]
     }
   ]

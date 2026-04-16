@@ -1,16 +1,16 @@
 {
   "dependencies": [
-    "grpc",
-    "protobuf",
-    "simdjson",
-    "spdlog",
     "boost-asio",
     "boost-beast",
     "boost-headers",
     "boost-multiprecision",
     "boost-system",
     "boost-url",
+    "grpc",
     "openssl",
+    "protobuf",
+    "simdjson",
+    "spdlog",
     "yaml-cpp"
   ]
 }
