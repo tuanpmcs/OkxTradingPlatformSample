@@ -3,27 +3,9 @@ cmake_minimum_required(VERSION 3.25)
 project(
     hello_world
     VERSION 1.0
-    DESCRIPTION "Hello World C++26 project"
+    DESCRIPTION "Hello World C++23 project"
     LANGUAGES C CXX
 )
-
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-
-include(CheckCXXCompilerFlag)
-check_cxx_compiler_flag("-std=c++2c" COMPILER_SUPPORTS_CXX2C)
-option(HELLO_WORLD_REQUIRE_CXX26 "Fail configuration when C++26/C++2c is unavailable" OFF)
-
-if(COMPILER_SUPPORTS_CXX2C)
-    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-std=c++2c>)
-elseif(MSVC)
-    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/std:c++latest>)
-elseif(HELLO_WORLD_REQUIRE_CXX26)
-    message(FATAL_ERROR "C++26/C++2c mode is not supported by the current compiler.")
-else()
-    message(STATUS "C++26/C++2c mode is unavailable; building with C++23.")
-endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -38,8 +20,18 @@ endif()
 
 option(HELLO_WORLD_BUILD_BENCHMARKS "Build benchmark targets" OFF)
 
+file(GLOB SOURCE_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h"
+)
+
 add_executable(hello_world
     main.cpp
+    ${SOURCE_FILES}
+)
+
+target_include_directories(hello_world PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 find_package(boost_headers CONFIG REQUIRED)
@@ -103,6 +95,11 @@ if(HELLO_WORLD_BUILD_BENCHMARKS)
 
     add_executable(main_bench
         benchmarks/main_benchmark.cpp
+        src/types.cpp
+    )
+
+    target_include_directories(main_bench PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
     )
 
     target_link_libraries(main_bench PRIVATE

@@ -25,7 +25,13 @@ def ensure_proto_generated() -> None:
     GEN_DIR.mkdir(parents=True, exist_ok=True)
     out_pb2 = GEN_DIR / "market_data_pb2.py"
     out_grpc = GEN_DIR / "market_data_pb2_grpc.py"
-    if out_pb2.exists() and out_grpc.exists():
+    proto_file = PROTO_DIR / "market_data.proto"
+    if (
+        out_pb2.exists()
+        and out_grpc.exists()
+        and out_pb2.stat().st_mtime >= proto_file.stat().st_mtime
+        and out_grpc.stat().st_mtime >= proto_file.stat().st_mtime
+    ):
         return
 
     from grpc_tools import protoc
@@ -36,7 +42,7 @@ def ensure_proto_generated() -> None:
             f"-I{PROTO_DIR}",
             f"--python_out={GEN_DIR}",
             f"--grpc_python_out={GEN_DIR}",
-            str(PROTO_DIR / "market_data.proto"),
+            str(proto_file),
         ]
     )
     if rc != 0:
@@ -200,6 +206,24 @@ def decide_strategy_action(pred_ret: float, book: BookSnapshot | None, cfg: Stra
     return ("HOLD", "model does not confirm imbalance direction")
 
 
+def classify_direction(score: float, eps: float) -> tuple[str, float, float, float]:
+    e = max(float(eps), 1e-8)
+    z = float(score / e)
+    logits = np.array([z, 0.0, -z], dtype=float)  # up, neutral, down
+    logits = logits - float(np.max(logits))
+    ex = np.exp(logits)
+    probs = ex / np.sum(ex)
+    p_up, p_neutral, p_down = float(probs[0]), float(probs[1]), float(probs[2])
+
+    if score > e:
+        label = "up"
+    elif score < -e:
+        label = "down"
+    else:
+        label = "neutral"
+    return label, p_up, p_neutral, p_down
+
+
 class PredictionService(pb2_grpc.PredictionServiceServicer):
     def __init__(self, model_path: str) -> None:
         self.path = model_path
@@ -213,6 +237,7 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
         self.name = "PulseLinearV2"
         self.lstm = None
         self.seq_len = 0
+        self.input_dim = 1
         self.ret_mean = 0.0
         self.ret_std = 1.0
 
@@ -225,20 +250,23 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
             self.horizon_sec = int(bundle.get("horizon_sec", 30))
         elif model_path.endswith(".pt"):
             import torch
-            from lstm_model import LSTMRegressor
+            from lstm_model import build_sequence_model
 
             artifact = torch.load(model_path, map_location="cpu")
             self.mode = str(artifact.get("model_type", "lstm"))
-            self.name = str(artifact.get("model_name", "PulseLSTMV1"))
+            self.name = str(artifact.get("model_name", f"Pulse{self.mode.title()}V1"))
             self.horizon_sec = int(artifact.get("horizon_sec", 30))
             self.seq_len = int(artifact.get("seq_len", 60))
+            self.input_dim = int(artifact.get("input_dim", 1))
             self.ret_mean = float(artifact.get("ret_mean", 0.0))
             self.ret_std = float(artifact.get("ret_std", 1.0))
-            self.lstm = LSTMRegressor(
-                input_dim=int(artifact.get("input_dim", 1)),
+            self.lstm = build_sequence_model(
+                model_type=self.mode,
+                input_dim=self.input_dim,
                 hidden_size=int(artifact.get("hidden_size", 64)),
                 num_layers=int(artifact.get("num_layers", 2)),
                 dropout=float(artifact.get("dropout", 0.1)),
+                nhead=int(artifact.get("nhead", 4)),
             )
             self.lstm.load_state_dict(artifact["state_dict"])
             self.lstm.eval()
@@ -256,7 +284,7 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
         if len(points) < 8:
             return pb2.PredictResponse(
                 model_name=self.name,
-                signal="HOLD",
+                signal="neutral",
                 detail="Need at least 8 points",
             )
 
@@ -272,7 +300,7 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
             if arr_prices.size < self.seq_len + 1:
                 return pb2.PredictResponse(
                     model_name=self.name,
-                    signal="HOLD",
+                    signal="neutral",
                     detail=f"Need at least {self.seq_len + 1} points for LSTM",
                 )
 
@@ -293,7 +321,7 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
             except ValueError as feature_err:
                 return pb2.PredictResponse(
                     model_name=self.name,
-                    signal="HOLD",
+                    signal="neutral",
                     last_price=last_price,
                     predicted_price=last_price,
                     predicted_return=0.0,
@@ -302,17 +330,32 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
         pred_ret = float(np.clip(pred_ret, -0.05, 0.05))
         pred_price = last_price * (1.0 + pred_ret)
         strategy_signal, strategy_detail = decide_strategy_action(pred_ret, latest_book, strategy_cfg)
+        label, p_up, p_neutral, p_down = classify_direction(
+            score=pred_ret, eps=max(1e-8, strategy_cfg.alpha_pred_ret_threshold)
+        )
+
+        payload = {
+            "score": pred_ret,
+            "probability": {
+                "up": p_up,
+                "neutral": p_neutral,
+                "down": p_down,
+            },
+            "strategy_action": strategy_signal,
+            "strategy_detail": strategy_detail,
+            "points": len(points),
+            "model_mode": self.mode,
+            "strategy_mode": strategy_cfg.mode,
+            "hold_ms": strategy_cfg.hold_ms,
+        }
 
         return pb2.PredictResponse(
             model_name=self.name,
-            signal=strategy_signal,
+            signal=label,
             last_price=last_price,
             predicted_price=pred_price,
             predicted_return=pred_ret,
-            detail=(
-                f"points={len(points)} model_mode={self.mode} strategy={strategy_cfg.mode} "
-                f"hold_ms={strategy_cfg.hold_ms} {strategy_detail}"
-            ),
+            detail=json.dumps(payload, separators=(",", ":")),
         )
 
 

@@ -19,6 +19,9 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "CMAKE_CXX_STANDARD": "23",
+        "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+        "CMAKE_CXX_EXTENSIONS": "OFF",
         "VCPKG_TARGET_TRIPLET": "arm64-linux-dynamic"
       }
     },
@@ -40,7 +43,37 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "CMAKE_CXX_STANDARD": "23",
+        "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+        "CMAKE_CXX_EXTENSIONS": "OFF",
         "VCPKG_TARGET_TRIPLET": "x64-linux-dynamic"
+      }
+    },
+    {
+      "name": "arm64-osx-dynamic-dbg",
+      "binaryDir": "build/arm64-osx-dynamic/debug",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_STANDARD": "23",
+        "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+        "CMAKE_CXX_EXTENSIONS": "OFF",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "arm64-osx-dynamic"
+      }
+    },
+    {
+      "name": "arm64-osx-dynamic-rel",
+      "binaryDir": "build/arm64-osx-dynamic/release",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_STANDARD": "23",
+        "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+        "CMAKE_CXX_EXTENSIONS": "OFF",
+        "CMAKE_VERBOSE_MAKEFILE": "ON",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "arm64-osx-dynamic"
       }
     }
   ],
@@ -65,6 +98,14 @@
       "name": "x64-linux-dynamic-rel",
       "configurePreset": "x64-linux-dynamic-rel",
       "jobs": 2
+    },
+    {
+      "name": "arm64-osx-dynamic-dbg",
+      "configurePreset": "arm64-osx-dynamic-dbg"
+    },
+    {
+      "name": "arm64-osx-dynamic-rel",
+      "configurePreset": "arm64-osx-dynamic-rel"
     }
   ],
 
@@ -95,6 +136,20 @@
       "steps": [
         { "type": "configure", "name": "x64-linux-dynamic-rel" },
         { "type": "build", "name": "x64-linux-dynamic-rel" }
+      ]
+    },
+    {
+      "name": "ci-arm64-osx-dynamic-dbg",
+      "steps": [
+        { "type": "configure", "name": "arm64-osx-dynamic-dbg" },
+        { "type": "build", "name": "arm64-osx-dynamic-dbg" }
+      ]
+    },
+    {
+      "name": "ci-arm64-osx-dynamic-rel",
+      "steps": [
+        { "type": "configure", "name": "arm64-osx-dynamic-rel" },
+        { "type": "build", "name": "arm64-osx-dynamic-rel" }
       ]
     }
   ]

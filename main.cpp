@@ -20,10 +20,12 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <csignal>
 #include <cstdint>
 #include <deque>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <map>
@@ -94,6 +96,7 @@ std::string json_escape(std::string_view input)
 struct ParsedTickPayload
 {
 	double							   price{0.0};
+	std::string						   raw_json;
 	std::map<std::string, std::string> fields;
 };
 
@@ -161,58 +164,32 @@ std::optional<double> find_price_from_fields(const std::map<std::string, std::st
 	return std::nullopt;
 }
 
-std::optional<ParsedTickPayload> parse_okx_tick_payload(const std::string& payload)
+std::optional<std::int64_t> parse_int64_field(const std::map<std::string, std::string>& fields, const char* key)
 {
-	thread_local simdjson::dom::parser parser;
-	auto							   parsed = parser.parse(payload);
-	if (parsed.error())
+	const auto it = fields.find(key);
+	if (it == fields.end() || it->second.empty())
 	{
 		return std::nullopt;
 	}
 
-	ParsedTickPayload result;
-
-	auto arg = parsed["arg"];
-	if (!arg.error())
+	try
 	{
-		const auto arg_elem = arg.value_unsafe();
-		put_if_present(result.fields, arg_elem, "channel");
-		put_if_present(result.fields, arg_elem, "instId");
+		std::size_t pos = 0;
+		const auto	value = std::stoll(it->second, &pos);
+		if (pos == it->second.size())
+		{
+			return value;
+		}
 	}
-
-	auto data = parsed["data"].get_array();
-	if (data.error() || data.value_unsafe().size() == 0)
+	catch (const std::exception&)
 	{
-		return std::nullopt;
 	}
+	return std::nullopt;
+}
 
-	auto first = data.value_unsafe().at(0).value_unsafe();
-	for (const char* key : {"instId",
-							"ts",
-							"tradeId",
-							"side",
-							"seqId",
-							"px",
-							"sz",
-							"last",
-							"lastSz",
-							"lastPr",
-							"bidPx",
-							"bidSz",
-							"askPx",
-							"askSz",
-							"markPx",
-							"indexPx",
-							"open24h",
-							"high24h",
-							"low24h",
-							"vol24h",
-							"volCcy24h"})
-	{
-		put_if_present(result.fields, first, key);
-	}
-
-	auto bids = first["bids"].get_array();
+void copy_okx_book_top(std::map<std::string, std::string>& fields, const simdjson::dom::element& row)
+{
+	auto bids = row["bids"].get_array();
 	if (!bids.error() && bids.value_unsafe().size() > 0)
 	{
 		auto bid0 = bids.value_unsafe().at(0).get_array();
@@ -222,16 +199,16 @@ std::optional<ParsedTickPayload> parse_okx_tick_payload(const std::string& paylo
 			auto sz = bid0.value_unsafe().at(1).get_string();
 			if (!px.error())
 			{
-				result.fields["bidPx"] = std::string(px.value_unsafe());
+				fields["bidPx"] = std::string(px.value_unsafe());
 			}
 			if (!sz.error())
 			{
-				result.fields["bidSz"] = std::string(sz.value_unsafe());
+				fields["bidSz"] = std::string(sz.value_unsafe());
 			}
 		}
 	}
 
-	auto asks = first["asks"].get_array();
+	auto asks = row["asks"].get_array();
 	if (!asks.error() && asks.value_unsafe().size() > 0)
 	{
 		auto ask0 = asks.value_unsafe().at(0).get_array();
@@ -241,23 +218,97 @@ std::optional<ParsedTickPayload> parse_okx_tick_payload(const std::string& paylo
 			auto sz = ask0.value_unsafe().at(1).get_string();
 			if (!px.error())
 			{
-				result.fields["askPx"] = std::string(px.value_unsafe());
+				fields["askPx"] = std::string(px.value_unsafe());
 			}
 			if (!sz.error())
 			{
-				result.fields["askSz"] = std::string(sz.value_unsafe());
+				fields["askSz"] = std::string(sz.value_unsafe());
 			}
 		}
 	}
+}
 
-	const auto price = find_price_from_fields(result.fields);
-	if (!price)
+std::vector<ParsedTickPayload> parse_okx_tick_payloads(const std::string& payload)
+{
+	thread_local simdjson::dom::parser parser;
+	auto							   parsed = parser.parse(payload);
+	if (parsed.error())
+	{
+		return {};
+	}
+
+	std::map<std::string, std::string> arg_fields;
+
+	auto arg = parsed["arg"];
+	if (!arg.error())
+	{
+		const auto arg_elem = arg.value_unsafe();
+		put_if_present(arg_fields, arg_elem, "channel");
+		put_if_present(arg_fields, arg_elem, "instId");
+		put_if_present(arg_fields, arg_elem, "instType");
+	}
+
+	auto data = parsed["data"].get_array();
+	if (data.error() || data.value_unsafe().size() == 0)
+	{
+		return {};
+	}
+
+	std::vector<ParsedTickPayload> ticks;
+	for (simdjson::dom::element first : data.value_unsafe())
+	{
+		ParsedTickPayload result;
+		result.raw_json = payload;
+		result.fields = arg_fields;
+
+		for (const char* key : {"instId",
+								"ts",
+								"tradeId",
+								"side",
+								"seqId",
+								"px",
+								"sz",
+								"last",
+								"lastSz",
+								"lastPr",
+								"bidPx",
+								"bidSz",
+								"askPx",
+								"askSz",
+								"markPx",
+								"indexPx",
+								"open24h",
+								"high24h",
+								"low24h",
+								"vol24h",
+								"volCcy24h"})
+		{
+			put_if_present(result.fields, first, key);
+		}
+
+		copy_okx_book_top(result.fields, first);
+
+		const auto price = find_price_from_fields(result.fields);
+		if (!price)
+		{
+			continue;
+		}
+
+		result.price = *price;
+		ticks.push_back(std::move(result));
+	}
+
+	return ticks;
+}
+
+std::optional<ParsedTickPayload> parse_okx_tick_payload(const std::string& payload)
+{
+	auto ticks = parse_okx_tick_payloads(payload);
+	if (ticks.empty())
 	{
 		return std::nullopt;
 	}
-
-	result.price = *price;
-	return result;
+	return std::move(ticks.front());
 }
 
 // -------- logger.h --------
@@ -279,7 +330,7 @@ public:
 		spdlog::level(ss.str()); \
 	} while (0)
 
-#define ENABLE_STREAM_LOGS 1
+#define ENABLE_STREAM_LOGS 0
 
 #ifndef ENABLE_STREAM_LOGS
 #define ENABLE_STREAM_LOGS 0
@@ -928,8 +979,376 @@ struct TickEvent
 	double							   price{0.0};
 	double							   change{0.0};
 	std::string						   source;
+	std::string						   raw_json;
 	std::map<std::string, std::string> fields;
 	std::vector<std::string>		   changed_fields;
+};
+
+std::optional<double> parse_double_field(const std::map<std::string, std::string>& fields, const char* key)
+{
+	const auto it = fields.find(key);
+	if (it == fields.end() || it->second.empty())
+	{
+		return std::nullopt;
+	}
+
+	try
+	{
+		const double v = std::stod(it->second);
+		if (std::isfinite(v))
+		{
+			return v;
+		}
+	}
+	catch (const std::exception&)
+	{
+	}
+	return std::nullopt;
+}
+
+std::string to_fixed_string(double value, int precision = 10)
+{
+	std::ostringstream oss;
+	oss.setf(std::ios::fixed);
+	oss.precision(precision);
+	oss << value;
+	return oss.str();
+}
+
+std::string csv_escape(const std::string& input)
+{
+	bool needs_quotes = false;
+	for (char c : input)
+	{
+		if (c == ',' || c == '"' || c == '\n' || c == '\r')
+		{
+			needs_quotes = true;
+			break;
+		}
+	}
+
+	if (!needs_quotes)
+	{
+		return input;
+	}
+
+	std::string out;
+	out.reserve(input.size() + 4);
+	out.push_back('"');
+	for (char c : input)
+	{
+		if (c == '"')
+		{
+			out.push_back('"');
+		}
+		out.push_back(c);
+	}
+	out.push_back('"');
+	return out;
+}
+
+#include <boost/multiprecision/cpp_dec_float.hpp>
+
+using double_type = boost::multiprecision::number<
+	boost::multiprecision::cpp_dec_float<8>
+	, boost::multiprecision::et_off
+>;
+struct Book {
+    double price{};
+    double quantity{};
+    std::uint32_t deprecated_value{}; // or remove this field entirely
+    std::uint32_t order_count{};
+};
+
+struct Books {
+    std::vector<Book> bids;
+    std::vector<Book> asks;
+
+    std::uint64_t exchange_ts_ms{};
+    std::uint64_t recv_ts_ms{};
+    std::uint64_t sequence_id{};
+    std::string instrument_id;
+};
+
+struct Books5 {
+    std::array<Book, 5> bids;
+    std::array<Book, 5> asks;
+
+    std::uint64_t exchange_ts_ms{};
+    std::uint64_t recv_ts_ms{};
+    std::uint64_t sequence_id{};
+    std::string instrument_id;
+};
+
+struct Trade {
+    std::string instrument_id;
+    std::string exchange_trade_id;
+    double_type price{};
+    double_type size{};
+    std::string side;
+    std::uint64_t exchange_ts_ms{};
+    std::uint64_t recv_ts_ms{};
+    std::uint32_t trade_count{};
+    std::string exchange;
+    std::uint64_t sequence_id{};
+};
+
+using Trades = std::vector<Trade>;
+
+template <typename T>
+std::string to_json(const T& obj)
+{
+	std::string json = simdjson::to_json(obj);
+	return json;
+}
+
+template <typename T>
+std::optional<T> from_json(const std::string& json_str)
+{	T obj;
+	auto result = simdjson::from(json_str, obj);
+	if (result.error())
+	{		return std::nullopt;
+	}
+	return obj;
+}
+
+class CsvTickWriter
+{
+public:
+	explicit CsvTickWriter(const std::string& path)
+	{
+		_out.open(path, std::ios::out | std::ios::trunc);
+		if (!_out.is_open())
+		{
+			throw std::runtime_error("Failed to open csv output: " + path);
+		}
+		write_header();
+	}
+
+	void write(const TickEvent& tick)
+	{
+		const auto getv = [&](const char* key) -> std::string {
+			const auto it = tick.fields.find(key);
+			return (it == tick.fields.end()) ? "" : it->second;
+		};
+
+		double bid_px = 0.0;
+		double ask_px = 0.0;
+		if (const auto v = parse_double_field(tick.fields, "bidPx"); v.has_value())
+		{
+			bid_px = *v;
+		}
+		if (const auto v = parse_double_field(tick.fields, "askPx"); v.has_value())
+		{
+			ask_px = *v;
+		}
+		double spread = 0.0;
+		double mid_price = 0.0;
+		if (bid_px > 0.0 && ask_px > bid_px)
+		{
+			spread = ask_px - bid_px;
+			mid_price = 0.5 * (bid_px + ask_px);
+		}
+
+		_out << tick.ts_ms << ','
+			 << to_fixed_string(tick.price, 8) << ','
+			 << csv_escape(infer_event_type(getv("channel"))) << ','
+			 << csv_escape(getv("channel")) << ','
+			 << csv_escape(getv("instId")) << ','
+			 << csv_escape(getv("side")) << ','
+			 << csv_escape(getv("sz")) << ','
+			 << csv_escape(getv("bidPx")) << ','
+			 << csv_escape(getv("askPx")) << ','
+			 << csv_escape(getv("bidSz")) << ','
+			 << csv_escape(getv("askSz")) << ','
+			 << (spread > 0.0 ? to_fixed_string(spread, 8) : "") << ','
+			 << (mid_price > 0.0 ? to_fixed_string(mid_price, 8) : "") << ','
+			 << csv_escape(getv("mid_price")) << ','
+			 << csv_escape(getv("spread")) << ','
+			 << csv_escape(getv("imbalance")) << ','
+			 << csv_escape(getv("trade_volume")) << ','
+			 << csv_escape(getv("trade_imbalance")) << ','
+			 << csv_escape(tick.source) << '\n';
+		_out.flush();
+	}
+
+private:
+	static std::string infer_event_type(const std::string& channel)
+	{
+		return channel.find("trade") != std::string::npos ? "trade" : "order_book";
+	}
+
+	void write_header()
+	{
+		_out << "ts,price,event_type,channel,instId,trade_side,trade_size,bidPx,askPx,bidSz,askSz,"
+				"spread,mid_price,mid_price_feat,spread_feat,imbalance_feat,trade_volume_feat,"
+				"trade_imbalance_feat,source\n";
+		_out.flush();
+	}
+
+private:
+	std::ofstream _out;
+};
+
+class MarketFeatureEngine
+{
+public:
+	explicit MarketFeatureEngine(std::int64_t trade_window_ms = 5000)
+		  : _trade_window_ms(trade_window_ms)
+	{
+	}
+
+	void enrich(TickEvent& tick)
+	{
+		update_book_state(tick.fields);
+		update_trade_buffer(tick);
+		prune_old_trades(tick.ts_ms);
+
+		auto mid = compute_mid_price();
+		auto spread = compute_spread();
+		auto imb = compute_imbalance();
+		double trade_volume = 0.0;
+		double trade_imbalance = 0.0;
+
+		for (const auto& t : _trades)
+		{
+			trade_volume += t.abs_size;
+			trade_imbalance += t.signed_size;
+		}
+
+		if (mid.has_value())
+		{
+			tick.fields["mid_price"] = to_fixed_string(*mid);
+		}
+		if (spread.has_value())
+		{
+			tick.fields["spread"] = to_fixed_string(*spread);
+		}
+		if (imb.has_value())
+		{
+			tick.fields["imbalance"] = to_fixed_string(*imb);
+		}
+		tick.fields["trade_volume"] = to_fixed_string(trade_volume);
+		tick.fields["trade_imbalance"] = to_fixed_string(trade_imbalance);
+	}
+
+private:
+	struct TradeSample
+	{
+		std::int64_t ts_ms{0};
+		double		 abs_size{0.0};
+		double		 signed_size{0.0};
+	};
+
+	void update_book_state(const std::map<std::string, std::string>& fields)
+	{
+		if (auto bid_px = parse_double_field(fields, "bidPx"); bid_px.has_value() && *bid_px > 0.0)
+		{
+			_bid_px = *bid_px;
+		}
+		if (auto ask_px = parse_double_field(fields, "askPx"); ask_px.has_value() && *ask_px > 0.0)
+		{
+			_ask_px = *ask_px;
+		}
+		if (auto bid_sz = parse_double_field(fields, "bidSz"); bid_sz.has_value() && *bid_sz >= 0.0)
+		{
+			_bid_sz = *bid_sz;
+		}
+		if (auto ask_sz = parse_double_field(fields, "askSz"); ask_sz.has_value() && *ask_sz >= 0.0)
+		{
+			_ask_sz = *ask_sz;
+		}
+	}
+
+	void update_trade_buffer(const TickEvent& tick)
+	{
+		const auto channel_it = tick.fields.find("channel");
+		if (channel_it == tick.fields.end())
+		{
+			return;
+		}
+
+		const std::string& channel = channel_it->second;
+		if (channel.find("trade") == std::string::npos)
+		{
+			return;
+		}
+
+		const auto size = parse_double_field(tick.fields, "sz");
+		if (!size.has_value() || *size <= 0.0)
+		{
+			return;
+		}
+
+		double sign = 0.0;
+		const auto side_it = tick.fields.find("side");
+		if (side_it != tick.fields.end())
+		{
+			if (side_it->second == "buy")
+			{
+				sign = 1.0;
+			}
+			else if (side_it->second == "sell")
+			{
+				sign = -1.0;
+			}
+		}
+
+		TradeSample sample;
+		sample.ts_ms = tick.ts_ms;
+		sample.abs_size = *size;
+		sample.signed_size = sign * (*size);
+		_trades.push_back(sample);
+	}
+
+	void prune_old_trades(std::int64_t now_ms)
+	{
+		const std::int64_t threshold = now_ms - _trade_window_ms;
+		while (!_trades.empty() && _trades.front().ts_ms < threshold)
+		{
+			_trades.pop_front();
+		}
+	}
+
+	std::optional<double> compute_mid_price() const
+	{
+		if (_bid_px.has_value() && _ask_px.has_value() && *_bid_px > 0.0 && *_ask_px > *_bid_px)
+		{
+			return 0.5 * (*_bid_px + *_ask_px);
+		}
+		return std::nullopt;
+	}
+
+	std::optional<double> compute_spread() const
+	{
+		if (_bid_px.has_value() && _ask_px.has_value() && *_bid_px > 0.0 && *_ask_px > *_bid_px)
+		{
+			return *_ask_px - *_bid_px;
+		}
+		return std::nullopt;
+	}
+
+	std::optional<double> compute_imbalance() const
+	{
+		if (!_bid_sz.has_value() || !_ask_sz.has_value())
+		{
+			return std::nullopt;
+		}
+		const double denom = *_bid_sz + *_ask_sz;
+		if (denom <= 0.0)
+		{
+			return std::nullopt;
+		}
+		return (*_bid_sz - *_ask_sz) / denom;
+	}
+
+private:
+	std::int64_t			   _trade_window_ms{5000};
+	std::optional<double>	   _bid_px;
+	std::optional<double>	   _ask_px;
+	std::optional<double>	   _bid_sz;
+	std::optional<double>	   _ask_sz;
+	std::deque<TradeSample>	   _trades;
 };
 
 class GrpcTickHub
@@ -1070,6 +1489,7 @@ public:
 			tick.set_price(event.price);
 			tick.set_change(event.change);
 			tick.set_source(event.source);
+			tick.set_raw_json(event.raw_json);
 			for (const auto& [k, v] : event.fields)
 			{
 				(*tick.mutable_fields())[k] = v;
@@ -1161,6 +1581,8 @@ int main(int argc, char* argv[])
 	bool		   grpc_enabled = true;
 	std::string	   override_symbol;
 	std::string	   override_channel;
+	std::string	   csv_out_path;
+	int			   duration_sec = 0;
 	for (int i = 1; i < argc; ++i)
 	{
 		const std::string_view arg(argv[i]);
@@ -1197,6 +1619,27 @@ int main(int argc, char* argv[])
 		{
 			override_channel = argv[++i];
 		}
+		else if (arg == "--csv-out" && i + 1 < argc)
+		{
+			csv_out_path = argv[++i];
+		}
+		else if (arg == "--duration-sec" && i + 1 < argc)
+		{
+			try
+			{
+				const int parsed = std::stoi(argv[++i]);
+				if (parsed < 0)
+				{
+					throw std::out_of_range("duration must be non-negative");
+				}
+				duration_sec = parsed;
+			}
+			catch (const std::exception&)
+			{
+				std::cerr << "Invalid --duration-sec value. Expected integer >= 0.\n";
+				return 1;
+			}
+		}
 	}
 
 	Logger::init_console();
@@ -1218,31 +1661,11 @@ websocket_endpoint:
         ws_url: "wss://ws.okx.com:8443/ws/v5/public"
         subscriptions:
             - instId: "BTC-USDT"
-              channel: "bbo-tbt"
-            - instId: "BTC-USDT"
               channel: "books5"
-            - instId: "BTC-USDT"
-              channel: "books"
-            - instId: "BTC-USDT"
-              channel: "tickers"
             - instId: "BTC-USDT"
               channel: "trades"
             - instId: "BTC-USDT"
-              channel: "candle1m"
-
-            # Derivatives-focused public channels
-            - instId: "BTC-USDT-SWAP"
-              channel: "mark-price"
-            - instId: "BTC-USDT-SWAP"
-              channel: "index-tickers"
-            - instId: "BTC-USDT-SWAP"
-              channel: "open-interest"
-            - instId: "BTC-USDT-SWAP"
-              channel: "funding-rate"
-            - instId: "BTC-USDT-SWAP"
-              channel: "estimated-price"
-            - instType: "SWAP"
-              channel: "liquidation-orders"
+              channel: "books"
 
     business_endpoint:
         ws_url: "wss://ws.okx.com:8443/ws/v5/business"
@@ -1318,6 +1741,20 @@ websocket_endpoint:
 	GrpcTickHub						   grpc_hub;
 	MarketDataServiceImpl			   grpc_service(grpc_hub);
 	std::unique_ptr<GrpcServerRuntime> grpc_server;
+	std::unique_ptr<CsvTickWriter>	   csv_writer;
+	if (!csv_out_path.empty())
+	{
+		try
+		{
+			csv_writer = std::make_unique<CsvTickWriter>(csv_out_path);
+			LOG_STREAM_INFO("CSV export enabled: " << csv_out_path);
+		}
+		catch (const std::exception& e)
+		{
+			LOG_STREAM_ERROR("Failed to initialize CSV writer: " << e.what());
+			return 1;
+		}
+	}
 	if (grpc_enabled)
 	{
 		try
@@ -1360,15 +1797,27 @@ websocket_endpoint:
 	using clock = std::chrono::steady_clock;
 	const auto ping_interval = std::chrono::milliseconds(okx_config.network.ping_interval_ms);
 	const auto pong_timeout = std::chrono::milliseconds(okx_config.network.pong_timeout_ms);
+	const auto run_started_at = clock::now();
 
 	auto							   last_rx_time = clock::now();
 	auto							   last_ping_time = clock::time_point::min();
 	bool							   waiting_pong = false;
 	std::optional<double>			   last_price;
 	std::map<std::string, std::string> previous_fields;
+	MarketFeatureEngine				   feature_engine(5000);
 
 	while (tls_client.is_open() && !g_should_stop.load())
 	{
+		if (duration_sec > 0)
+		{
+			const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(clock::now() - run_started_at);
+			if (elapsed.count() >= duration_sec)
+			{
+				LOG_STREAM_INFO("Collection duration reached (" << duration_sec << "s). Stopping.");
+				break;
+			}
+		}
+
 		std::string response;
 		auto		read_result = tls_client.read(response, okx_config.network.stale_timeout_ms);
 		if (!read_result.ok())
@@ -1389,10 +1838,10 @@ websocket_endpoint:
 
 		LOG_STREAM_INFO("Stream: " << response);
 
-		if (grpc_server)
+		if (grpc_server || csv_writer)
 		{
-			const auto parsed = parse_okx_tick_payload(response);
-			if (parsed)
+			const auto parsed_ticks = parse_okx_tick_payloads(response);
+			for (const auto& parsed : parsed_ticks)
 			{
 				const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
 										 std::chrono::system_clock::now())
@@ -1400,32 +1849,42 @@ websocket_endpoint:
 										 .count();
 
 				TickEvent tick;
-				tick.ts_ms = static_cast<std::int64_t>(now);
-				tick.price = parsed->price;
-				tick.change = last_price.has_value() ? (parsed->price - *last_price) : 0.0;
+				tick.ts_ms = parse_int64_field(parsed.fields, "ts").value_or(static_cast<std::int64_t>(now));
+				tick.price = parsed.price;
+				tick.change = last_price.has_value() ? (parsed.price - *last_price) : 0.0;
 				tick.source = "cxx-grpc";
-				tick.fields = parsed->fields;
+				tick.raw_json = parsed.raw_json;
+				tick.fields = parsed.fields;
+				// feature_engine.enrich(tick);
 
-				for (const auto& [k, v] : tick.fields)
+				// for (const auto& [k, v] : tick.fields)
+				// {
+				// 	const auto it = previous_fields.find(k);
+				// 	if (it == previous_fields.end() || it->second != v)
+				// 	{
+				// 		tick.changed_fields.push_back(k);
+				// 	}
+				// }
+				// for (const auto& [k, _] : previous_fields)
+				// {
+				// 	if (tick.fields.find(k) == tick.fields.end())
+				// 	{
+				// 		tick.changed_fields.push_back(k);
+				// 	}
+				// }
+
+				// previous_fields = tick.fields;
+				// last_price = parsed.price;
+
+				// if (csv_writer)
+				// {
+				// 	csv_writer->write(tick);
+				// }
+
+				if (grpc_server)
 				{
-					const auto it = previous_fields.find(k);
-					if (it == previous_fields.end() || it->second != v)
-					{
-						tick.changed_fields.push_back(k);
-					}
+					grpc_hub.broadcast(tick);
 				}
-				for (const auto& [k, _] : previous_fields)
-				{
-					if (tick.fields.find(k) == tick.fields.end())
-					{
-						tick.changed_fields.push_back(k);
-					}
-				}
-
-				previous_fields = tick.fields;
-				last_price = parsed->price;
-
-				grpc_hub.broadcast(tick);
 			}
 		}
 	}

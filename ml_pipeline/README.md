@@ -9,6 +9,35 @@ This folder is trimmed to a single production path:
 5. Run inference server
 6. (Optional) test prediction server
 
+## Pipeline Mapping
+
+| Stage | Input | Output | Tool |
+| --- | --- | --- | --- |
+| Market | Order book / Trades | Raw data | OKX WebSocket (C++ gateway) |
+| Data | Raw stream | Structured dataset | Python collector |
+| Feature | Raw data | Feature vector | NumPy / Pandas |
+| Label | Feature + future price | `y` (`up/down/neutral`) | Python labeling |
+| Model | `X`, `y` | Prediction model | Sklearn |
+| System | Model + stream | Trading signal | C++ + gRPC + Python inference |
+
+## Feature Engineering
+
+| Feature | Formula | Meaning |
+| --- | --- | --- |
+| `mid_price` | `(bid + ask) / 2` | Fair price |
+| `spread` | `ask - bid` | Liquidity |
+| `imbalance` | `(bid_vol - ask_vol) / (bid_vol + ask_vol)` | Buy vs sell pressure |
+| `trade_volume` | `sum(size)` (rolling) | Activity |
+| `trade_imbalance` | `buy_vol - sell_vol` (rolling) | Aggressive flow |
+
+## Label Rules
+
+| Condition | Label |
+| --- | --- |
+| `future_mid - current_mid > eps` | `up` |
+| `future_mid - current_mid < -eps` | `down` |
+| otherwise | `neutral` |
+
 ## Prerequisites
 
 - C++ backend stream server running on `127.0.0.1:50051`
@@ -51,6 +80,7 @@ python build_realtime_features.py \
 python create_future_labels.py \
   --features-csv ../data/features_btcusdt.csv \
   --horizon-sec 30 \
+  --eps 0.0001 \
   --out-csv ../data/train_dataset_btcusdt_h30.csv
 ```
 

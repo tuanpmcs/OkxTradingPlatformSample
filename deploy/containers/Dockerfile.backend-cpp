@@ -20,8 +20,9 @@ RUN if [ "${REINSTALL_CMAKE_VERSION_FROM_SOURCE}" != "none" ]; then \
 
 # 2. Dependency Metadata (Separated to leverage layer caching)
 COPY vcpkg.json vcpkg-configuration.json ./
-COPY vcpkg-triplets ./vcpkg-triplets
 COPY CMakeLists.txt CMakePresets.json main.cpp ./
+COPY include ./include
+COPY src ./src
 COPY proto ./proto
 
 # 3. Configure & Install Dependencies

@@ -13,6 +13,23 @@ services:
       - "50051:50051"
     restart: unless-stopped
 
+  backend-cpp-collector:
+    build:
+      context: ../../
+      dockerfile: deploy/containers/Dockerfile.backend-cpp
+    image: okx-trading/backend-cpp:local
+    container_name: backend-cpp-collector
+    command:
+      - "--disable-grpc"
+      - "--csv-out"
+      - "/data/market_stream_btcusdt.csv"
+      - "--duration-sec"
+      - "${COLLECT_DURATION_SEC:-600}"
+    volumes:
+      - ../../data:/data
+    profiles:
+      - training
+
   inference-python:
     build:
       context: ../../
@@ -28,6 +45,19 @@ services:
     depends_on:
       - backend-cpp
     restart: unless-stopped
+
+  ml-trainer:
+    build:
+      context: ../../
+      dockerfile: deploy/containers/Dockerfile.inference-python
+    image: okx-trading/inference-python:local
+    container_name: ml-trainer
+    volumes:
+      - ../../data:/app/data
+      - ../../models:/app/models
+    profiles:
+      - training
+
 
   web-gateway:
     build:

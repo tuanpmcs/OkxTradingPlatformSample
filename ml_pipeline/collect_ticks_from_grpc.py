@@ -22,7 +22,13 @@ def ensure_proto_generated() -> None:
     GEN_DIR.mkdir(parents=True, exist_ok=True)
     out_pb2 = GEN_DIR / "market_data_pb2.py"
     out_grpc = GEN_DIR / "market_data_pb2_grpc.py"
-    if out_pb2.exists() and out_grpc.exists():
+    proto_file = PROTO_DIR / "market_data.proto"
+    if (
+        out_pb2.exists()
+        and out_grpc.exists()
+        and out_pb2.stat().st_mtime >= proto_file.stat().st_mtime
+        and out_grpc.stat().st_mtime >= proto_file.stat().st_mtime
+    ):
         return
 
     rc = protoc.main(
@@ -31,7 +37,7 @@ def ensure_proto_generated() -> None:
             f"-I{PROTO_DIR}",
             f"--python_out={GEN_DIR}",
             f"--grpc_python_out={GEN_DIR}",
-            str(PROTO_DIR / "market_data.proto"),
+            str(proto_file),
         ]
     )
     if rc != 0:
@@ -68,6 +74,13 @@ def _build_row(tick: object, fallback_channel: str, event_type: str, fallback_sy
     ask_px = _parse_float(fields.get("askPx"))
     bid_sz = _parse_float(fields.get("bidSz"))
     ask_sz = _parse_float(fields.get("askSz"))
+    trade_size = _parse_float(fields.get("sz"))
+    trade_side = (fields.get("side") or "").strip().lower()
+    mid_price_feat = _parse_float(fields.get("mid_price"))
+    spread_feat = _parse_float(fields.get("spread"))
+    imbalance_feat = _parse_float(fields.get("imbalance"))
+    trade_volume_feat = _parse_float(fields.get("trade_volume"))
+    trade_imbalance_feat = _parse_float(fields.get("trade_imbalance"))
 
     mid_price = 0.0
     spread = 0.0
@@ -92,12 +105,19 @@ def _build_row(tick: object, fallback_channel: str, event_type: str, fallback_sy
         event_type,
         channel,
         inst,
+        trade_side,
+        f"{trade_size:.8f}" if trade_size > 0 else "",
         f"{bid_px:.8f}" if bid_px > 0 else "",
         f"{ask_px:.8f}" if ask_px > 0 else "",
         f"{bid_sz:.8f}" if bid_sz > 0 else "",
         f"{ask_sz:.8f}" if ask_sz > 0 else "",
         f"{spread:.8f}" if spread > 0 else "",
         f"{mid_price:.8f}" if mid_price > 0 else "",
+        f"{mid_price_feat:.10f}" if mid_price_feat > 0 else "",
+        f"{spread_feat:.10f}" if spread_feat > 0 else "",
+        f"{imbalance_feat:.10f}" if imbalance_feat != 0 else "",
+        f"{trade_volume_feat:.10f}" if trade_volume_feat > 0 else "",
+        f"{trade_imbalance_feat:.10f}" if trade_imbalance_feat != 0 else "",
         getattr(tick, "source", "") or "unknown",
     ]
 
@@ -179,12 +199,19 @@ def main() -> None:
                 "event_type",
                 "channel",
                 "instId",
+                "trade_side",
+                "trade_size",
                 "bidPx",
                 "askPx",
                 "bidSz",
                 "askSz",
                 "spread",
                 "mid_price",
+                "mid_price_feat",
+                "spread_feat",
+                "imbalance_feat",
+                "trade_volume_feat",
+                "trade_imbalance_feat",
                 "source",
             ]
         )

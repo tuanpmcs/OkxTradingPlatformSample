@@ -1,123 +1,91 @@
 # OKX Trading Platform Sample
 
-An end-to-end sample project for real-time market data streaming and local inference:
+An end-to-end sample trading stack for:
 
-- `backend-cpp`: a C++ backend that reads OKX WebSocket data and republishes it as a gRPC stream
-- `inference-python`: a Python gRPC service for model inference
-- `web-gateway`: an HTTP gateway that forwards prediction requests to the inference service
-- `desktop/`: an Electron frontend for stream monitoring, charts, predictions, and trading simulation
+- streaming real-time market data from OKX
+- serving normalized ticks over gRPC from C++
+- running local ML inference over gRPC from Python
+- exposing an optional HTTP bridge for external integrations
+- visualizing and simulating strategy behavior in an Electron desktop app
 
-## Architecture Overview
+## What You Get
+
+- `backend-cpp` (`hello_world`): C++ market stream service
+- `inference-python`: Python `PredictionService` gRPC server
+- `web-gateway`: Node/Express HTTP gateway (`/health`, `/predict`)
+- `desktop/`: Electron UI for stream + prediction workflows
+
+## Architecture
 
 ![Architecture](docs/architecture.drawio.svg)
 
-Diagram file:
-
-- [docs/architecture.drawio.svg](docs/architecture.drawio.svg)
-
-## Main Components
-
-### 1. Backend C++
-
-- Main file: [main.cpp](main.cpp)
-- Connects to OKX public and business channels
-- Parses payloads with `simdjson`
-- Normalizes ticks and publishes them through `MarketData.Subscribe`
-- In Docker, the service binds to `0.0.0.0:50051`
-- From the host machine or the desktop app, connect with `grpc://127.0.0.1:50051`
-
-### 2. gRPC Contract
-
-- Proto file: [proto/market_data.proto](proto/market_data.proto)
-- Main services:
-  - `MarketData.Subscribe(SubscribeRequest) returns (stream Tick)`
-  - `PredictionService.Predict(PredictRequest) returns (PredictResponse)`
-
-### 3. Python Inference
-
-- Folder: [ml_pipeline](ml_pipeline)
-- Server: [prediction_server.py](ml_pipeline/prediction_server.py)
-- Default model in Docker Compose:
-  - `/app/models/pulse_tree_v1.joblib`
-- Default port:
-  - `127.0.0.1:50061`
-
-### 4. Web Gateway
-
-- Dockerfile: [deploy/containers/Dockerfile.web-gateway](deploy/containers/Dockerfile.web-gateway)
-- Compose service: `web-gateway`
-- Port:
-  - `http://127.0.0.1:8080`
-- Purpose:
-  - exposes HTTP endpoints such as `/health` and `/predict`
-- Note:
-  - this is not the visual frontend
-
-### 5. Electron Frontend
-
-- Folder: [desktop](desktop)
-- Main entry points:
-  - [desktop/main.js](desktop/main.js)
-  - [desktop/renderer.js](desktop/renderer.js)
-  - [desktop/index.html](desktop/index.html)
-- Default frontend connections:
-  - stream backend: `grpc://127.0.0.1:50051`
-  - prediction service: `127.0.0.1:50061`
+- Diagram source: [docs/architecture.drawio.svg](docs/architecture.drawio.svg)
+- Proto contract: [proto/market_data.proto](proto/market_data.proto)
 
 ## Data Flow
 
-1. `backend-cpp` connects to OKX WebSocket and receives market events.
-2. The backend normalizes the data and publishes it through the `MarketData.Subscribe` gRPC stream.
-3. The Electron app subscribes to the stream at `127.0.0.1:50051`.
-4. When predictions are needed, Electron calls `PredictionService.Predict` at `127.0.0.1:50061`.
-5. `web-gateway` provides an additional HTTP API for testing or external integration.
+1. `backend-cpp` subscribes to OKX channels and normalizes tick data.
+2. `backend-cpp` publishes `MarketData.Subscribe` stream over gRPC (`:50051`).
+3. `desktop` subscribes to the stream and renders market activity.
+4. `desktop` (or `web-gateway`) calls Python `PredictionService.Predict` (`:50061`).
+5. `web-gateway` exposes HTTP endpoints for integrations and API testing.
 
-## Quick Start With Docker Compose
+## Prerequisites
 
-Start the three backend services:
+- Docker (recommended path)
+- Node.js + npm (for `desktop` app)
+- Python 3.9+ (for local ML path)
+- CMake 3.25+, Ninja, and `vcpkg` (for local C++ path)
+
+## Quick Start (Recommended): Docker + Desktop
+
+### 1) Start backend services
 
 ```bash
 docker compose -f deploy/containers/docker-compose.yml up --build
 ```
 
-Once started, the exposed ports are:
+Exposed ports:
 
 - `backend-cpp`: `127.0.0.1:50051`
 - `inference-python`: `127.0.0.1:50061`
 - `web-gateway`: `127.0.0.1:8080`
 
-Check the gateway:
+Optional health check:
 
 ```bash
 curl http://127.0.0.1:8080/health
 ```
 
-## Launch The Desktop Frontend
-
-The frontend is not part of Docker Compose. After the three services above are running, launch the Electron app in another terminal:
+### 2) Start desktop app (separate terminal)
 
 ```bash
-cd /Volumes/Dev/Workspace/okx_trading_platform_sample/desktop
+cd desktop
 npm install
 npm start
 ```
 
-In the app, use this stream URL:
+Default targets used by the app:
 
-```text
-grpc://127.0.0.1:50051
-```
+- stream: `grpc://127.0.0.1:50051`
+- prediction gRPC: `127.0.0.1:50061`
 
-## Run Locally Without Docker
+## Run Locally (Without Docker)
 
-### Backend C++
+### 1) C++ backend
 
 ```bash
-cmake --build --preset build-debug-osx -j
-./build/osx/debug/bin/hello_world --grpc-port 50051
+export VCPKG_ROOT=$HOME/vcpkg
+cmake --workflow --preset ci-arm64-osx-dynamic-rel
+./build/arm64-osx-dynamic/release/bin/hello_world --grpc-port 50051
 ```
 
-### Python Inference
+Notes:
+
+- For Linux presets, see [CMakePresets.json](CMakePresets.json).
+- Binary name is `hello_world`.
+
+### 2) Python inference server
 
 ```bash
 cd ml_pipeline
@@ -127,13 +95,39 @@ pip install -r requirements.txt
 python prediction_server.py --model ../models/pulse_tree_v1.joblib --host 127.0.0.1 --port 50061
 ```
 
-### Desktop Electron
+### 3) Desktop
 
 ```bash
 cd desktop
 npm install
 npm start
 ```
+
+## Service Endpoints
+
+### gRPC
+
+- `MarketData.Subscribe(SubscribeRequest) returns (stream Tick)`
+- `PredictionService.Predict(PredictRequest) returns (PredictResponse)`
+
+Defined in: [proto/market_data.proto](proto/market_data.proto)
+
+### HTTP (web-gateway)
+
+- `GET /health`
+- `POST /predict`
+
+Gateway implementation: [deploy/containers/gateway/server.js](deploy/containers/gateway/server.js)
+
+## ML Pipeline (Training / Model Build)
+
+Detailed steps are documented in:
+
+- [ml_pipeline/README.md](ml_pipeline/README.md)
+
+Containerized training profile (collector + trainer) is documented in:
+
+- [deploy/containers/README.md](deploy/containers/README.md)
 
 ## Repository Layout
 
@@ -149,9 +143,17 @@ npm start
 └── models/
 ```
 
+## Troubleshooting
+
+- If `desktop` cannot connect to stream:
+  - verify `backend-cpp` is listening on `127.0.0.1:50051`
+  - check container logs: `docker logs backend-cpp`
+- If `/predict` fails from gateway:
+  - verify `inference-python` is up on `127.0.0.1:50061`
+  - verify model file exists at `models/pulse_tree_v1.joblib`
+- First C++ Docker build can take longer due to dependency compilation.
+
 ## Notes
 
-- `web-gateway` is only an HTTP API and does not provide the UI.
-- The first Docker build for `backend-cpp` can take a while because it compiles C++ dependencies.
-- The Docker build for `backend-cpp` is now more cache-friendly, but changing `vcpkg.json`, `Dockerfile.backend-cpp`, or the custom triplets will still invalidate the dependency layer.
-- If the desktop app cannot connect to the stream, check the `backend-cpp` container logs and confirm that port `50051` is published.
+- `web-gateway` is an API bridge, not a visual frontend.
+- `desktop/README.md` has additional UI-specific usage details.

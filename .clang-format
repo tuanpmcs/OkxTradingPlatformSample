@@ -9,13 +9,11 @@ Standard: c++20
 
 # Indentation
 ColumnLimit: 0 # Not format blocks comments by devs
-UseTab: Always
 IncludeBlocks: Regroup
 IndentCaseBlocks: true
 IndentCaseLabels: false
 AccessModifierOffset: -4
 IndentWidth: 4
-TabWidth: 4
 ContinuationIndentWidth: 8
 ConstructorInitializerIndentWidth: 6
 # SpacesBeforeTrailingComments: 2

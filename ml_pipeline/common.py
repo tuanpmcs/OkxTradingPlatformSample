@@ -8,17 +8,11 @@ import pandas as pd
 
 
 FEATURE_COLUMNS: List[str] = [
-    "momentum_3",
-    "momentum_5",
-    "momentum_8",
-    "momentum_13",
-    "momentum_21",
-    "volatility_10",
-    "volatility_20",
-    "range_10",
-    "range_20",
-    "ema_gap_12_26",
-    "rsi_14",
+    "mid_price",
+    "spread",
+    "imbalance",
+    "trade_volume",
+    "trade_imbalance",
 ]
 
 
@@ -82,25 +76,71 @@ def build_realtime_features(df: pd.DataFrame) -> pd.DataFrame:
     out["rsi_14"] = 100.0 - (100.0 / (1.0 + rs))
     out["rsi_14"] = out["rsi_14"] / 100.0
 
-    # Optional order-book context features (when bid/ask are present).
+    # Required microstructure features for gateway/inference handoff.
+    # Keep fallback behavior so old datasets without book fields still work.
+    if "mid_price_feat" in out.columns:
+        out["mid_price"] = pd.to_numeric(out["mid_price_feat"], errors="coerce")
+    else:
+        out["mid_price"] = np.nan
+
+    if "spread_feat" in out.columns:
+        out["spread"] = pd.to_numeric(out["spread_feat"], errors="coerce")
+    else:
+        out["spread"] = np.nan
+
+    if "imbalance_feat" in out.columns:
+        out["imbalance"] = pd.to_numeric(out["imbalance_feat"], errors="coerce")
+    else:
+        out["imbalance"] = np.nan
+
+    if "trade_volume_feat" in out.columns:
+        out["trade_volume"] = pd.to_numeric(out["trade_volume_feat"], errors="coerce")
+    else:
+        out["trade_volume"] = np.nan
+
+    if "trade_imbalance_feat" in out.columns:
+        out["trade_imbalance"] = pd.to_numeric(out["trade_imbalance_feat"], errors="coerce")
+    else:
+        out["trade_imbalance"] = np.nan
+
     if "bidPx" in out.columns and "askPx" in out.columns:
         bid = pd.to_numeric(out["bidPx"], errors="coerce")
         ask = pd.to_numeric(out["askPx"], errors="coerce")
         mid = 0.5 * (bid + ask)
         valid = (mid > 0) & (ask > 0) & (bid > 0)
-        out["mid_price"] = np.where(valid, mid, np.nan)
+        out["mid_price"] = np.where(out["mid_price"].notna(), out["mid_price"], np.where(valid, mid, np.nan))
+        out["spread"] = np.where(out["spread"].notna(), out["spread"], np.where(valid, ask - bid, np.nan))
         out["spread_bps"] = np.where(valid, ((ask - bid) / mid) * 10000.0, np.nan)
     else:
-        out["mid_price"] = np.nan
         out["spread_bps"] = np.nan
 
     if "bidSz" in out.columns and "askSz" in out.columns:
         bid_sz = pd.to_numeric(out["bidSz"], errors="coerce")
         ask_sz = pd.to_numeric(out["askSz"], errors="coerce")
         denom = bid_sz + ask_sz
-        out["book_imbalance"] = np.where(denom > 0, (bid_sz - ask_sz) / denom, np.nan)
+        calc_imb = np.where(denom > 0, (bid_sz - ask_sz) / denom, np.nan)
+        out["book_imbalance"] = calc_imb
+        out["imbalance"] = np.where(out["imbalance"].notna(), out["imbalance"], calc_imb)
     else:
         out["book_imbalance"] = np.nan
+
+    if "trade_size" in out.columns:
+        tsize = pd.to_numeric(out["trade_size"], errors="coerce").fillna(0.0)
+        tside = out["trade_side"].astype(str).str.lower() if "trade_side" in out.columns else pd.Series("", index=out.index)
+        signed = np.where(tside == "buy", tsize, np.where(tside == "sell", -tsize, 0.0))
+        roll_n = 20
+        calc_trade_volume = tsize.rolling(window=roll_n, min_periods=1).sum()
+        calc_trade_imb = pd.Series(signed, index=out.index).rolling(window=roll_n, min_periods=1).sum()
+        out["trade_volume"] = np.where(out["trade_volume"].notna(), out["trade_volume"], calc_trade_volume)
+        out["trade_imbalance"] = np.where(
+            out["trade_imbalance"].notna(), out["trade_imbalance"], calc_trade_imb
+        )
+
+    out["mid_price"] = out["mid_price"].fillna(out["price"])
+    out["spread"] = out["spread"].fillna(0.0)
+    out["imbalance"] = out["imbalance"].fillna(0.0)
+    out["trade_volume"] = out["trade_volume"].fillna(0.0)
+    out["trade_imbalance"] = out["trade_imbalance"].fillna(0.0)
 
     return out
 
@@ -116,6 +156,14 @@ def create_future_labels(df_feat: pd.DataFrame, cfg: FeatureConfig) -> pd.DataFr
     out["target_price"] = future_price
     out["target_ts"] = out["ts"].to_numpy()[idx]
 
+    return out
+
+
+def attach_direction_label(df_feat: pd.DataFrame, eps: float) -> pd.DataFrame:
+    out = df_feat.copy()
+    e = max(float(eps), 1e-8)
+    ret = pd.to_numeric(out["target_return"], errors="coerce").fillna(0.0)
+    out["label"] = np.where(ret > e, "up", np.where(ret < -e, "down", "neutral"))
     return out
 
 
