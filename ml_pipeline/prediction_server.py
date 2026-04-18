@@ -240,6 +240,8 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
         self.input_dim = 1
         self.ret_mean = 0.0
         self.ret_std = 1.0
+        self.label_classes = []
+        self.label_eps = 0.0001
 
         if model_path.endswith(".joblib"):
             bundle = joblib.load(model_path)
@@ -248,6 +250,8 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
             self.feature_columns = list(bundle.get("feature_columns", FEATURE_COLUMNS))
             self.name = str(bundle.get("model_name", "PulseTreeV1"))
             self.horizon_sec = int(bundle.get("horizon_sec", 30))
+            self.label_classes = list(bundle.get("label_classes", []))
+            self.label_eps = float(bundle.get("label_eps", self.label_eps))
         elif model_path.endswith(".pt"):
             import torch
             from lstm_model import build_sequence_model
@@ -301,7 +305,7 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
                 return pb2.PredictResponse(
                     model_name=self.name,
                     signal="neutral",
-                    detail=f"Need at least {self.seq_len + 1} points for LSTM",
+                    detail=f"Need at least {self.seq_len + 1} points for {self.mode}",
                 )
 
             log_returns = np.log(np.maximum(arr_prices[1:], 1e-12) / np.maximum(arr_prices[:-1], 1e-12))
@@ -313,8 +317,23 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
         else:
             try:
                 x = latest_feature_vector_from_prices(arr_prices, self.feature_columns)
+                classifier_probs = None
                 if self.model_obj is not None:
-                    pred_ret = float(self.model_obj.predict(x.reshape(1, -1))[0])
+                    if self.mode == "xgboost_classifier" and hasattr(self.model_obj, "predict_proba"):
+                        raw_proba = self.model_obj.predict_proba(x.reshape(1, -1))[0]
+                        class_names = self.label_classes or ["down", "neutral", "up"]
+                        prob_by_label = {
+                            str(class_names[i]): float(raw_proba[i])
+                            for i in range(min(len(class_names), len(raw_proba)))
+                        }
+                        classifier_probs = {
+                            "up": prob_by_label.get("up", 0.0),
+                            "neutral": prob_by_label.get("neutral", 0.0),
+                            "down": prob_by_label.get("down", 0.0),
+                        }
+                        pred_ret = (classifier_probs["up"] - classifier_probs["down"]) * self.label_eps
+                    else:
+                        pred_ret = float(self.model_obj.predict(x.reshape(1, -1))[0])
                 else:
                     x_s = (x - self.mean) / self.scale
                     pred_ret = float(self.intercept + np.dot(x_s, self.weights))
@@ -330,9 +349,15 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
         pred_ret = float(np.clip(pred_ret, -0.05, 0.05))
         pred_price = last_price * (1.0 + pred_ret)
         strategy_signal, strategy_detail = decide_strategy_action(pred_ret, latest_book, strategy_cfg)
-        label, p_up, p_neutral, p_down = classify_direction(
-            score=pred_ret, eps=max(1e-8, strategy_cfg.alpha_pred_ret_threshold)
-        )
+        if "classifier_probs" in locals() and classifier_probs is not None:
+            p_up = classifier_probs["up"]
+            p_neutral = classifier_probs["neutral"]
+            p_down = classifier_probs["down"]
+            label = max(classifier_probs, key=classifier_probs.get)
+        else:
+            label, p_up, p_neutral, p_down = classify_direction(
+                score=pred_ret, eps=max(1e-8, strategy_cfg.alpha_pred_ret_threshold)
+            )
 
         payload = {
             "score": pred_ret,

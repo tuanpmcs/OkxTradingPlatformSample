@@ -15,7 +15,7 @@ COPY ml_pipeline ./ml_pipeline
 COPY proto ./proto
 
 # Default model path can be overridden per deployment.
-ENV MODEL_PATH=/app/models/pulse_tree_v1.joblib
+ENV MODEL_PATH=/app/models/pulse_lstm_v1.pt
 
 EXPOSE 50061
 CMD ["sh", "-c", "python ml_pipeline/prediction_server.py --model ${MODEL_PATH} --host 0.0.0.0 --port 50061"]

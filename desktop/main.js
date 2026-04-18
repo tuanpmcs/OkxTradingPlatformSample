@@ -243,7 +243,7 @@ function normalizeSubscriptions(config) {
 
   if (dedup.size === 0) {
     const symbol = String(config?.symbol || 'BTC-USDT').trim() || 'BTC-USDT';
-    const channel = String(config?.channel || 'tickers').trim() || 'tickers';
+    const channel = String(config?.channel || 'books5').trim() || 'books5';
     dedup.set(`${channel}:${symbol}`, { symbol, channel });
   }
 
@@ -381,6 +381,7 @@ function inferPredictionGrpc(payload) {
         max_entry_spread_bps: Number.isFinite(Number(payload?.maxEntrySpreadBps))
           ? Number(payload.maxEntrySpreadBps)
           : 3.0,
+        model_type: String(payload?.modelType || 'xgboost'),
         points
       };
 

@@ -1,4 +1,23 @@
 services:
+  # Python runtime inference: serves trained artifacts over PredictionService gRPC.
+  inference-python:
+    build:
+      context: ../../
+      dockerfile: deploy/containers/Dockerfile.inference-python
+    image: okx-trading/inference-python:local
+    container_name: inference-python
+    environment:
+      MODEL_PATH: ${MODEL_PATH:-/app/models/pulse_lstm_v1.pt}
+      MODEL_DIR_PATH: ${MODEL_DIR_PATH:-/app/models}
+    volumes:
+      - ../../models:/app/models:ro
+    ports:
+      - "50061:50061"
+    profiles:
+      - runtime
+    restart: unless-stopped
+
+  # C++ runtime backend: OKX WS -> parse trades/books5 -> rolling features -> gRPC stream.
   backend-cpp:
     build:
       context: ../../
@@ -7,58 +26,15 @@ services:
     container_name: backend-cpp
     volumes:
       - .:/app
-      - vcpkg-cache:/usr/local/vcpkg
-      - build-cache:/app/build
     ports:
       - "50051:50051"
-    restart: unless-stopped
-
-  backend-cpp-collector:
-    build:
-      context: ../../
-      dockerfile: deploy/containers/Dockerfile.backend-cpp
-    image: okx-trading/backend-cpp:local
-    container_name: backend-cpp-collector
-    command:
-      - "--disable-grpc"
-      - "--csv-out"
-      - "/data/market_stream_btcusdt.csv"
-      - "--duration-sec"
-      - "${COLLECT_DURATION_SEC:-600}"
-    volumes:
-      - ../../data:/data
     profiles:
-      - training
-
-  inference-python:
-    build:
-      context: ../../
-      dockerfile: deploy/containers/Dockerfile.inference-python
-    image: okx-trading/inference-python:local
-    container_name: inference-python
-    environment:
-      MODEL_PATH: /app/models/pulse_tree_v1.joblib
-    volumes:
-      - ../../models:/app/models:ro
-    ports:
-      - "50061:50061"
+      - runtime
     depends_on:
-      - backend-cpp
+      - inference-python
     restart: unless-stopped
 
-  ml-trainer:
-    build:
-      context: ../../
-      dockerfile: deploy/containers/Dockerfile.inference-python
-    image: okx-trading/inference-python:local
-    container_name: ml-trainer
-    volumes:
-      - ../../data:/app/data
-      - ../../models:/app/models
-    profiles:
-      - training
-
-
+  # Optional HTTP adapter for tools and external integrations.
   web-gateway:
     build:
       context: ../../
@@ -70,10 +46,121 @@ services:
       PRED_GRPC_TARGET: inference-python:50061
     ports:
       - "8080:8080"
+    profiles:
+      - runtime
     depends_on:
-      - inference-python
+      - backend-cpp
     restart: unless-stopped
 
-volumes:
-  vcpkg-cache:
-  build-cache:
+  # C++ collector backend: same parser/feature path, but writes CSV and exits after duration.
+  backend-cpp-collector:
+    build:
+      context: ../../
+      dockerfile: deploy/containers/Dockerfile.backend-cpp
+    image: okx-trading/backend-cpp:local
+    container_name: backend-cpp-collector
+    command:
+      - "--disable-grpc"
+      - "--csv-out"
+      - "/data/books_trades_btcusdt"
+      - "--duration-sec"
+      - "${COLLECT_DURATION_SEC:-10800}"
+    volumes:
+      - ../../data:/data
+    profiles:
+      - training
+
+  # Python training step: builds feature rows from the C++ collector CSV export.
+  feature-builder:
+    build:
+      context: ../../
+      dockerfile: deploy/containers/Dockerfile.inference-python
+    image: okx-trading/inference-python:local
+    container_name: feature-builder
+    command:
+      - "python"
+      - "ml_pipeline/build_realtime_features.py"
+      - "--csv"
+      - "${RAW_TICKS_CSV:-/app/data/books_trades_btcusdt.csv}"
+      - "--symbol"
+      - "${TRAIN_SYMBOL:-BTC-USDT}"
+      - "--channels"
+      - "${TRAIN_CHANNELS:-trades,books5}"
+      - "--out-csv"
+      - "${FEATURES_CSV:-/app/data/features_btcusdt.csv}"
+    volumes:
+      - ../../data:/app/data
+    profiles:
+      - training
+    depends_on:
+      backend-cpp-collector:
+        condition: service_completed_successfully
+
+  # Python training step: creates future labels from feature rows.
+  label-maker:
+    build:
+      context: ../../
+      dockerfile: deploy/containers/Dockerfile.inference-python
+    image: okx-trading/inference-python:local
+    container_name: label-maker
+    command:
+      - "python"
+      - "ml_pipeline/create_future_labels.py"
+      - "--features-csv"
+      - "${FEATURES_CSV:-/app/data/books_trades_btcusdt.features.csv}"
+      - "--horizon-sec"
+      - "${LABEL_HORIZON_SEC:-30}"
+      - "--horizon-ms"
+      - "${LABEL_HORIZON_MS:-100}"
+      - "--eps"
+      - "${LABEL_EPS:-0.0001}"
+      - "--spread-eps-multiplier"
+      - "${LABEL_SPREAD_EPS_MULTIPLIER:-0.3}"
+      - "--output-pattern"
+      - "${LABEL_OUTPUT_PATTERN:-full}"
+      - "--out-csv"
+      - "${TRAIN_DATASET_CSV:-/app/data/train_dataset_btcusdt_h30.csv}"
+    volumes:
+      - ../../data:/app/data
+    profiles:
+      - training
+    depends_on:
+      backend-cpp-collector:
+        condition: service_completed_successfully
+
+  # Python training step: trains/evaluates model artifacts for runtime inference.
+  model-trainer:
+    build:
+      context: ../../
+      dockerfile: deploy/containers/Dockerfile.inference-python
+    image: okx-trading/inference-python:local
+    container_name: model-trainer
+    command:
+      - "python"
+      - "ml_pipeline/train_model.py"
+      - "--dataset-csv"
+      - "${TRAIN_DATASET_CSV:-/app/data/train_dataset_btcusdt_h30.csv}"
+      - "--model-out-dir"
+      - "${MODEL_OUT_DIR:-/app/models}"
+      - "--horizon-sec"
+      - "${LABEL_HORIZON_SEC:-30}"
+      - "--label-eps"
+      - "${LABEL_EPS:-0.0001}"
+      - "--model-types"
+      - "${TRAIN_MODEL_TYPES:-lstm,cnn,transformer,xgboost}"
+      - "--task"
+      - "${TRAIN_TASK:-regression}"
+      - "--metrics-out-csv"
+      - "${TRAIN_METRICS_CSV:-/app/data/train_metrics_btcusdt_h30.csv}"
+      - "--best-model-out"
+      - "${BEST_MODEL_OUT:-/app/models/pulse_best_model.artifact}"
+      - "--min-rows"
+      - "${TRAIN_MIN_ROWS:-500}"
+    volumes:
+      - ../../data:/app/data
+      - ../../models:/app/models
+    profiles:
+      - training
+    depends_on:
+      label-maker:
+        condition: service_completed_successfully

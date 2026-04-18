@@ -1,11 +1,39 @@
 # ML Pipeline (Minimal Flow)
 
-This folder is trimmed to a single production path:
+This folder supports the Python training and inference side of the compact architecture.
 
-1. Collect trades + order book from gRPC
+Runtime:
+
+```text
+OKX WS
+  -> C++ runtime backend
+      -> parse trades/books5
+      -> maintain rolling state
+      -> build feature
+      -> call Python/SageMaker inference
+      -> receive prediction
+      -> simulator / frontend
+```
+
+Training:
+
+```text
+OKX WS / historical data
+  -> C++ collector backend
+      -> parse trades/books5
+      -> maintain rolling state
+      -> build feature
+      -> future label
+      -> dataset export
+  -> Python training
+```
+
+Local script flow:
+
+1. Collect trades + order book from gRPC or consume C++ CSV export
 2. Build realtime features
 3. Create future-`Δt` labels
-4. Train tree model (`train_better_model.py`)
+4. Train XGBoost/CNN/LSTM/Transformer models (`train_model.py`)
 5. Run inference server
 6. (Optional) test prediction server
 
@@ -13,12 +41,12 @@ This folder is trimmed to a single production path:
 
 | Stage | Input | Output | Tool |
 | --- | --- | --- | --- |
-| Market | Order book / Trades | Raw data | OKX WebSocket (C++ gateway) |
-| Data | Raw stream | Structured dataset | Python collector |
+| Market | Order book / Trades | Raw data | OKX WebSocket |
+| Data | Raw stream | Structured dataset | Python / C++ |
 | Feature | Raw data | Feature vector | NumPy / Pandas |
-| Label | Feature + future price | `y` (`up/down/neutral`) | Python labeling |
-| Model | `X`, `y` | Prediction model | Sklearn |
-| System | Model + stream | Trading signal | C++ + gRPC + Python inference |
+| Label | Feature + future price | `y` (`up/down/neutral`) | Python |
+| Model | `X`, `y` | Prediction model | XGBoost / PyTorch CNN / LSTM / Transformer |
+| System | Model + stream | Trading signal | C++ + gRPC |
 
 ## Feature Engineering
 
@@ -61,18 +89,20 @@ python collect_ticks_from_grpc.py \
   --trade-channel trades \
   --book-channel books5 \
   --duration-sec 300 \
-  --out-csv ../data/market_stream_btcusdt.csv
+  --out-csv ../data/books_trades_btcusdt.csv
 ```
 
 ## 3) Build realtime features
 
 ```bash
 python build_realtime_features.py \
-  --csv ../data/market_stream_btcusdt.csv \
+  --csv ../data/books_trades_btcusdt.csv \
   --symbol BTC-USDT \
   --channels trades,books5 \
   --out-csv ../data/features_btcusdt.csv
 ```
+
+If the channel filter does not match collected rows, the script logs available symbols/channels and falls back to all collected rows. If the CSV only has a header, collect for longer and confirm the stream is producing books/trades ticks.
 
 ## 4) Create future-Δt labels
 
@@ -84,19 +114,28 @@ python create_future_labels.py \
   --out-csv ../data/train_dataset_btcusdt_h30.csv
 ```
 
-## 5) Train model (recommended tree model)
+## 5) Train and compare models
 
 ```bash
-python train_better_model.py \
+python train_model.py \
   --dataset-csv ../data/train_dataset_btcusdt_h30.csv \
-  --model-out ../models/pulse_tree_v1.joblib
+  --model-out-dir ../models \
+  --model-types xgboost,cnn,lstm,transformer
 ```
+
+For notebook-based evaluation, open:
+
+`notebooks/model_comparison.ipynb`
+
+It trains XGBoost, CNN, LSTM, and Transformer on the same split, saves model artifacts, and writes:
+
+`../data/model_comparison_metrics.csv`
 
 ## 6) Run inference server
 
 ```bash
 python prediction_server.py \
-  --model ../models/pulse_tree_v1.joblib \
+  --model ../models/pulse_lstm_v1.pt \
   --host 127.0.0.1 \
   --port 50061
 ```
@@ -106,7 +145,7 @@ python prediction_server.py \
 ```bash
 python predict_client.py \
   --target 127.0.0.1:50061 \
-  --csv ../data/market_stream_btcusdt.csv \
+  --csv ../data/books_trades_btcusdt.csv \
   --symbol BTC-USDT \
   --channel books5 \
   --horizon-sec 30
@@ -114,5 +153,5 @@ python predict_client.py \
 
 ## Notes
 
-- `prediction_server.py` can serve `.joblib` and `.json` model artifacts.
+- `prediction_server.py` can serve `.pt`, `.joblib`, and `.json` model artifacts. Runtime defaults to the LSTM artifact; point `MODEL_PATH` at XGBoost, CNN, or Transformer artifacts to switch architectures.
 - `../data` and `../models` will be created by scripts when needed.

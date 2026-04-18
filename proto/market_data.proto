@@ -47,6 +47,7 @@ message PredictRequest {
   double alpha_imbalance_threshold = 10;
   double alpha_pred_ret_threshold = 11;
   double max_entry_spread_bps = 12;
+  string model_type = 13; // xgboost | lstm | cnn | transformer
 }
 
 message PredictResponse {

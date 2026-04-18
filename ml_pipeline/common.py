@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
+from typing import Deque
 from typing import List
 
 import numpy as np
@@ -19,6 +21,15 @@ FEATURE_COLUMNS: List[str] = [
 @dataclass
 class FeatureConfig:
     horizon_sec: int = 30
+    horizon_ms: int | None = None
+    trade_lookback_ms: int = 1000
+    book_channel: str = "books5"
+    trade_channel: str = "trades"
+
+    def resolved_horizon_ms(self) -> int:
+        if self.horizon_ms is not None:
+            return max(1, int(self.horizon_ms))
+        return max(1, int(self.horizon_sec) * 1000)
 
 
 def load_ticks(csv_path: str) -> pd.DataFrame:
@@ -38,138 +49,264 @@ def load_ticks(csv_path: str) -> pd.DataFrame:
     return out
 
 
-def build_realtime_features(df: pd.DataFrame) -> pd.DataFrame:
+def _to_float(value: object, default: float = 0.0) -> float:
+    try:
+        out = float(value)
+        if np.isfinite(out):
+            return out
+    except Exception:
+        pass
+    return default
+
+
+def _to_int(value: object, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def _normalize_text(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().lower()
+
+
+def _fallback_price_features(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    px = out["price"]
+    out["mid_price"] = pd.to_numeric(out.get("price", 0.0), errors="coerce").fillna(0.0)
+    out["spread"] = 0.0
+    out["imbalance"] = 0.0
+    out["trade_volume"] = 0.0
+    out["trade_imbalance"] = 0.0
+    return out
 
-    out["momentum_3"] = (px / px.shift(3)) - 1.0
-    out["momentum_5"] = (px / px.shift(5)) - 1.0
-    out["momentum_8"] = (px / px.shift(8)) - 1.0
-    out["momentum_13"] = (px / px.shift(13)) - 1.0
-    out["momentum_21"] = (px / px.shift(21)) - 1.0
 
-    roll10 = px.rolling(window=10, min_periods=10)
-    mean10 = roll10.mean()
-    std10 = roll10.std(ddof=0)
-    max10 = roll10.max()
-    min10 = roll10.min()
+def build_realtime_features(df: pd.DataFrame, cfg: FeatureConfig | None = None) -> pd.DataFrame:
+    cfg = cfg or FeatureConfig()
+    if df.empty:
+        return df.copy()
 
-    roll20 = px.rolling(window=20, min_periods=20)
-    mean20 = roll20.mean()
-    std20 = roll20.std(ddof=0)
-    max20 = roll20.max()
-    min20 = roll20.min()
+    out = df.copy().sort_values("ts").reset_index(drop=True)
+    has_stream_cols = ("channel" in out.columns) or ("event_type" in out.columns)
+    if not has_stream_cols:
+        return _fallback_price_features(out)
 
-    out["volatility_10"] = np.where(mean10 != 0, std10 / mean10, 0.0)
-    out["volatility_20"] = np.where(mean20 != 0, std20 / mean20, 0.0)
-    out["range_10"] = np.where(mean10 != 0, (max10 - min10) / mean10, 0.0)
-    out["range_20"] = np.where(mean20 != 0, (max20 - min20) / mean20, 0.0)
+    channels = out["channel"].astype(str).str.lower() if "channel" in out.columns else pd.Series("", index=out.index)
+    event_types = (
+        out["event_type"].astype(str).str.lower() if "event_type" in out.columns else pd.Series("", index=out.index)
+    )
+    trade_sides = out["trade_side"].astype(str).str.lower() if "trade_side" in out.columns else pd.Series("", index=out.index)
 
-    ema12 = px.ewm(span=12, adjust=False).mean()
-    ema26 = px.ewm(span=26, adjust=False).mean()
-    out["ema_gap_12_26"] = np.where(px != 0, (ema12 - ema26) / px, 0.0)
+    trades: Deque[tuple[int, float, float, str]] = deque()
+    feature_rows: list[dict[str, object]] = []
 
-    delta = px.diff()
-    gain = delta.clip(lower=0).rolling(window=14, min_periods=14).mean()
-    loss = (-delta.clip(upper=0)).rolling(window=14, min_periods=14).mean()
-    rs = np.where(loss != 0, gain / loss, 0.0)
-    out["rsi_14"] = 100.0 - (100.0 / (1.0 + rs))
-    out["rsi_14"] = out["rsi_14"] / 100.0
+    prev_mid: float | None = None
+    prev_spread: float | None = None
+    prev_imbalance5: float | None = None
 
-    # Required microstructure features for gateway/inference handoff.
-    # Keep fallback behavior so old datasets without book fields still work.
-    if "mid_price_feat" in out.columns:
-        out["mid_price"] = pd.to_numeric(out["mid_price_feat"], errors="coerce")
-    else:
-        out["mid_price"] = np.nan
+    lookback_ms = max(1, int(cfg.trade_lookback_ms))
+    book_channel = _normalize_text(cfg.book_channel)
+    trade_channel = _normalize_text(cfg.trade_channel)
 
-    if "spread_feat" in out.columns:
-        out["spread"] = pd.to_numeric(out["spread_feat"], errors="coerce")
-    else:
-        out["spread"] = np.nan
+    for idx, row in out.iterrows():
+        ts_ms = _to_int(row.get("ts"), 0)
+        channel = _normalize_text(channels.iloc[idx])
+        event_type = _normalize_text(event_types.iloc[idx])
+        trade_side = _normalize_text(trade_sides.iloc[idx])
 
-    if "imbalance_feat" in out.columns:
-        out["imbalance"] = pd.to_numeric(out["imbalance_feat"], errors="coerce")
-    else:
-        out["imbalance"] = np.nan
+        is_trade = (event_type == "trade") or (trade_channel and trade_channel in channel) or (channel == "trades")
+        if is_trade:
+            trade_size = _to_float(row.get("trade_size"), 0.0)
+            trade_price = _to_float(row.get("price"), 0.0)
+            if trade_size > 0.0 and trade_price > 0.0 and trade_side in {"buy", "sell"}:
+                trades.append((ts_ms, trade_price, trade_size, trade_side))
 
-    if "trade_volume_feat" in out.columns:
-        out["trade_volume"] = pd.to_numeric(out["trade_volume_feat"], errors="coerce")
-    else:
-        out["trade_volume"] = np.nan
+        cutoff_ms = ts_ms - lookback_ms
+        while trades and trades[0][0] < cutoff_ms:
+            trades.popleft()
 
-    if "trade_imbalance_feat" in out.columns:
-        out["trade_imbalance"] = pd.to_numeric(out["trade_imbalance_feat"], errors="coerce")
-    else:
-        out["trade_imbalance"] = np.nan
+        is_books5 = (book_channel and channel == book_channel) or (channel == "books5")
+        if not is_books5:
+            continue
 
-    if "bidPx" in out.columns and "askPx" in out.columns:
-        bid = pd.to_numeric(out["bidPx"], errors="coerce")
-        ask = pd.to_numeric(out["askPx"], errors="coerce")
-        mid = 0.5 * (bid + ask)
-        valid = (mid > 0) & (ask > 0) & (bid > 0)
-        out["mid_price"] = np.where(out["mid_price"].notna(), out["mid_price"], np.where(valid, mid, np.nan))
-        out["spread"] = np.where(out["spread"].notna(), out["spread"], np.where(valid, ask - bid, np.nan))
-        out["spread_bps"] = np.where(valid, ((ask - bid) / mid) * 10000.0, np.nan)
-    else:
-        out["spread_bps"] = np.nan
+        bid_px = _to_float(row.get("bidPx"), 0.0)
+        ask_px = _to_float(row.get("askPx"), 0.0)
+        bid_sz = _to_float(row.get("bidSz"), 0.0)
+        ask_sz = _to_float(row.get("askSz"), 0.0)
 
-    if "bidSz" in out.columns and "askSz" in out.columns:
-        bid_sz = pd.to_numeric(out["bidSz"], errors="coerce")
-        ask_sz = pd.to_numeric(out["askSz"], errors="coerce")
-        denom = bid_sz + ask_sz
-        calc_imb = np.where(denom > 0, (bid_sz - ask_sz) / denom, np.nan)
-        out["book_imbalance"] = calc_imb
-        out["imbalance"] = np.where(out["imbalance"].notna(), out["imbalance"], calc_imb)
-    else:
-        out["book_imbalance"] = np.nan
+        mid = 0.0
+        spread = 0.0
+        if bid_px > 0.0 and ask_px > bid_px:
+            mid = 0.5 * (bid_px + ask_px)
+            spread = ask_px - bid_px
+        else:
+            mid = _to_float(row.get("mid_price_feat"), _to_float(row.get("mid_price"), _to_float(row.get("price"), 0.0)))
+            spread = _to_float(row.get("spread_feat"), _to_float(row.get("spread"), 0.0))
+        if mid <= 0.0:
+            continue
 
-    if "trade_size" in out.columns:
-        tsize = pd.to_numeric(out["trade_size"], errors="coerce").fillna(0.0)
-        tside = out["trade_side"].astype(str).str.lower() if "trade_side" in out.columns else pd.Series("", index=out.index)
-        signed = np.where(tside == "buy", tsize, np.where(tside == "sell", -tsize, 0.0))
-        roll_n = 20
-        calc_trade_volume = tsize.rolling(window=roll_n, min_periods=1).sum()
-        calc_trade_imb = pd.Series(signed, index=out.index).rolling(window=roll_n, min_periods=1).sum()
-        out["trade_volume"] = np.where(out["trade_volume"].notna(), out["trade_volume"], calc_trade_volume)
-        out["trade_imbalance"] = np.where(
-            out["trade_imbalance"].notna(), out["trade_imbalance"], calc_trade_imb
+        rel_spread = (spread / mid) if mid > 0.0 else 0.0
+        top_denom = bid_sz + ask_sz
+        imbalance1 = ((bid_sz - ask_sz) / top_denom) if top_denom > 0.0 else 0.0
+        microprice = (
+            ((ask_px * bid_sz) + (bid_px * ask_sz)) / top_denom
+            if (top_denom > 0.0 and bid_px > 0.0 and ask_px > 0.0)
+            else mid
         )
 
-    out["mid_price"] = out["mid_price"].fillna(out["price"])
-    out["spread"] = out["spread"].fillna(0.0)
-    out["imbalance"] = out["imbalance"].fillna(0.0)
-    out["trade_volume"] = out["trade_volume"].fillna(0.0)
-    out["trade_imbalance"] = out["trade_imbalance"].fillna(0.0)
+        bid_vol_1 = bid_sz
+        ask_vol_1 = ask_sz
+        bid_vol_5 = bid_vol_1
+        ask_vol_5 = ask_vol_1
+        denom5 = bid_vol_5 + ask_vol_5
+        imbalance5 = ((bid_vol_5 - ask_vol_5) / denom5) if denom5 > 0.0 else imbalance1
 
-    return out
+        weighted_bid_depth = bid_vol_1
+        weighted_ask_depth = ask_vol_1
+        book_slope = 0.0
+
+        trade_count = 0
+        buy_count = 0
+        sell_count = 0
+        trade_vol = 0.0
+        buy_vol = 0.0
+        sell_vol = 0.0
+        trade_notional = 0.0
+
+        for t_ts, t_px, t_sz, t_side in trades:
+            if t_ts < cutoff_ms:
+                continue
+            trade_count += 1
+            trade_vol += t_sz
+            trade_notional += t_px * t_sz
+            if t_side == "buy":
+                buy_count += 1
+                buy_vol += t_sz
+            elif t_side == "sell":
+                sell_count += 1
+                sell_vol += t_sz
+
+        trade_imbalance = ((buy_vol - sell_vol) / trade_vol) if trade_vol > 0.0 else 0.0
+        signed_vol = buy_vol - sell_vol
+        avg_trade_size = (trade_vol / trade_count) if trade_count > 0 else 0.0
+        trade_vwap = (trade_notional / trade_vol) if trade_vol > 0.0 else mid
+        trade_vwap_dev = ((trade_vwap - mid) / mid) if mid > 0.0 else 0.0
+
+        mid_ret_1 = ((mid - prev_mid) / prev_mid) if (prev_mid is not None and prev_mid > 0.0) else 0.0
+        delta_mid = (mid - prev_mid) if prev_mid is not None else 0.0
+        delta_spread = (spread - prev_spread) if prev_spread is not None else 0.0
+        imbalance5_delta = (imbalance5 - prev_imbalance5) if prev_imbalance5 is not None else 0.0
+
+        feature_rows.append(
+            {
+                "ts": ts_ms,
+                "price": mid,
+                "event_type": row.get("event_type", "order_book"),
+                "channel": row.get("channel", cfg.book_channel),
+                "instId": row.get("instId", ""),
+                "mid_price": mid,
+                "spread": spread,
+                "rel_spread": rel_spread,
+                "microprice": microprice,
+                "imbalance1": imbalance1,
+                "imbalance5": imbalance5,
+                "bid_vol_1": bid_vol_1,
+                "ask_vol_1": ask_vol_1,
+                "bid_vol_5": bid_vol_5,
+                "ask_vol_5": ask_vol_5,
+                "weighted_bid_depth": weighted_bid_depth,
+                "weighted_ask_depth": weighted_ask_depth,
+                "book_slope": book_slope,
+                "trade_count_lookback": trade_count,
+                "buy_count_lookback": buy_count,
+                "sell_count_lookback": sell_count,
+                "trade_volume": trade_vol,
+                "trade_vol_lookback": trade_vol,
+                "buy_vol_lookback": buy_vol,
+                "sell_vol_lookback": sell_vol,
+                "trade_imbalance": signed_vol,
+                "trade_imbalance_ratio": trade_imbalance,
+                "trade_vwap": trade_vwap,
+                "trade_vwap_dev": trade_vwap_dev,
+                "signed_vol": signed_vol,
+                "avg_trade_size": avg_trade_size,
+                "mid_prev": prev_mid if prev_mid is not None else mid,
+                "spread_prev": prev_spread if prev_spread is not None else spread,
+                "mid_ret_1": mid_ret_1,
+                "delta_mid": delta_mid,
+                "delta_spread": delta_spread,
+                "imbalance5_delta": imbalance5_delta,
+                "lookback_ms": lookback_ms,
+                # Keep training compatibility: legacy feature name maps to top-of-book imbalance.
+                "imbalance": imbalance5,
+            }
+        )
+
+        prev_mid = mid
+        prev_spread = spread
+        prev_imbalance5 = imbalance5
+
+    if not feature_rows:
+        return _fallback_price_features(out)
+
+    return pd.DataFrame(feature_rows)
 
 
 def create_future_labels(df_feat: pd.DataFrame, cfg: FeatureConfig) -> pd.DataFrame:
     out = df_feat.copy()
-    horizon_ms = cfg.horizon_sec * 1000
-    future_ts = out["ts"] + horizon_ms
-    idx = np.searchsorted(out["ts"].to_numpy(), future_ts.to_numpy(), side="left")
-    idx = np.clip(idx, 0, len(out) - 1)
-    future_price = out["price"].to_numpy()[idx]
-    out["target_return"] = (future_price / out["price"]) - 1.0
-    out["target_price"] = future_price
-    out["target_ts"] = out["ts"].to_numpy()[idx]
+    out = out.sort_values("ts").reset_index(drop=True)
+    horizon_ms = cfg.resolved_horizon_ms()
+
+    ts_values = pd.to_numeric(out["ts"], errors="coerce").to_numpy(dtype=np.int64)
+    future_ts = ts_values + horizon_ms
+    idx = np.searchsorted(ts_values, future_ts, side="left")
+    valid = idx < len(out)
+
+    current_mid = (
+        pd.to_numeric(out["mid_price"], errors="coerce")
+        if "mid_price" in out.columns
+        else pd.Series(np.nan, index=out.index)
+    )
+    current_price = pd.to_numeric(out["price"], errors="coerce")
+    current_mid = current_mid.where(current_mid.notna(), current_price)
+
+    future_mid = np.full(len(out), np.nan, dtype=float)
+    target_ts = np.full(len(out), np.nan, dtype=float)
+    if np.any(valid):
+        current_mid_np = current_mid.to_numpy(dtype=float)
+        future_mid[valid] = current_mid_np[idx[valid]]
+        target_ts[valid] = ts_values[idx[valid]]
+
+    out["target_delta"] = future_mid - current_mid
+    out["target_return"] = (future_mid / current_mid) - 1.0
+    out["target_price"] = future_mid
+    out["target_ts"] = target_ts
 
     return out
 
 
-def attach_direction_label(df_feat: pd.DataFrame, eps: float) -> pd.DataFrame:
+def attach_direction_label(df_feat: pd.DataFrame, eps: float, spread_multiplier: float = 0.3) -> pd.DataFrame:
     out = df_feat.copy()
-    e = max(float(eps), 1e-8)
-    ret = pd.to_numeric(out["target_return"], errors="coerce").fillna(0.0)
-    out["label"] = np.where(ret > e, "up", np.where(ret < -e, "down", "neutral"))
+    fallback_eps = max(float(eps), 0.0)
+
+    if "target_delta" in out.columns and "spread" in out.columns:
+        delta = pd.to_numeric(out["target_delta"], errors="coerce").fillna(0.0)
+        spread = pd.to_numeric(out["spread"], errors="coerce")
+        dynamic_eps = spread_multiplier * spread
+        label_eps = dynamic_eps.where(dynamic_eps.notna() & (dynamic_eps >= 0.0), fallback_eps)
+    else:
+        delta = pd.to_numeric(out["target_return"], errors="coerce").fillna(0.0)
+        label_eps = pd.Series(fallback_eps, index=out.index)
+
+    out["label_eps"] = label_eps
+    out["label"] = np.where(delta > label_eps, "up", np.where(delta < -label_eps, "down", "neutral"))
     return out
 
 
 def build_features(df: pd.DataFrame, cfg: FeatureConfig) -> pd.DataFrame:
     # Backward-compatible helper used by existing scripts.
-    return create_future_labels(build_realtime_features(df), cfg)
+    return create_future_labels(build_realtime_features(df, cfg), cfg)
 
 
 def select_training_rows(df_feat: pd.DataFrame) -> pd.DataFrame:

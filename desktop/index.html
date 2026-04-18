@@ -109,9 +109,10 @@
 
       <section class="card sim-card slide-up delay-3">
         <div class="chart-head">
-          <p>Prediction + Trade Simulator (Prebuilt Model)</p>
+          <p>Prediction + Trade Simulator</p>
         </div>
         <div class="sim-mode-strip">
+          <span id="sim-model-badge" class="sim-badge">Model: XGBoost</span>
           <span id="sim-mode-badge" class="sim-badge">Mode: Market Making</span>
           <span id="sim-auto-badge" class="sim-badge sim-badge-idle">Auto: OFF</span>
           <span id="sim-rule-hint" class="sim-rule-hint">Quote both sides, skip adverse windows.</span>
@@ -120,6 +121,23 @@
           <div class="sim-block">
             <p class="sim-block-title">Strategy Setup</p>
             <div class="sim-grid sim-grid-config">
+              <label id="sim-model-wrap">
+                <span class="input-title">Model</span>
+                <select id="sim-model-select">
+                  <option value="xgboost">XGBoost</option>
+                  <option value="lstm">LSTM</option>
+                  <option value="cnn">CNN</option>
+                  <option value="transformer">Transformer</option>
+                </select>
+              </label>
+              <label id="sim-config-wrap">
+                <span class="input-title">Config</span>
+                <select id="sim-config-select">
+                  <option value="market_maker">Market Maker</option>
+                  <option value="alpha_fast">Alpha Fast</option>
+                  <option value="alpha_ultra">Ultra Alpha</option>
+                </select>
+              </label>
               <label id="sim-strategy-wrap">
                 <span class="input-title">Strategy</span>
                 <select id="sim-strategy-select">
@@ -166,11 +184,6 @@
               </label>
             </div>
             <div class="sim-actions">
-              <button id="sim-preset-fast-btn" class="btn btn-secondary">Alpha Fast</button>
-              <button id="sim-preset-ultra-btn" class="btn btn-secondary">Alpha Ultra</button>
-              <button id="sim-infer-btn" class="btn btn-secondary">Run Inference</button>
-              <button id="sim-open-btn" class="btn btn-primary">Predict + Open</button>
-              <button id="sim-close-btn" class="btn btn-ghost">Close Position</button>
               <button id="sim-auto-start-btn" class="btn btn-primary">Start Auto</button>
               <button id="sim-auto-stop-btn" class="btn btn-ghost">Stop Auto</button>
               <button id="sim-account-reset-btn" class="btn btn-ghost">Reset Account</button>

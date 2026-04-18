@@ -1,10 +1,28 @@
 # Containerized Services (Trading Stack)
 
-This setup containerizes the current system into 3 cloud-ready services:
+This setup defines two Docker Compose profiles:
+
+- `runtime`: `OKX WS -> C++ runtime backend -> Python/SageMaker inference -> simulator / frontend`
+- `training`: `OKX WS / historical data -> C++ collector backend -> dataset export -> Python training`
+
+The runtime profile includes 3 cloud-ready services:
 
 - `backend-cpp`: C++ market stream backend (gRPC on `50051`)
 - `inference-python`: Python inference server (gRPC on `50061`)
 - `web-gateway`: REST gateway (HTTP on `8080`) that forwards `/predict` to inference gRPC
+
+Runtime flow:
+
+```text
+OKX WS
+  -> C++ runtime backend
+      -> parse trades/books5
+      -> maintain rolling state
+      -> build feature
+      -> call Python/SageMaker inference
+      -> receive prediction
+      -> simulator / frontend
+```
 
 ## Files
 
@@ -17,13 +35,13 @@ This setup containerizes the current system into 3 cloud-ready services:
 ## Prerequisites
 
 - Docker Desktop / Docker Engine
-- Optional model artifact at `../../models/pulse_tree_v1.joblib`
+- Optional model artifact such as `../../models/pulse_lstm_v1.pt` or `../../models/pulse_xgboost_v1.joblib`
 
-## Run all 3 services
+## Run Runtime Profile
 
 ```bash
 cd /Volumes/Dev/Workspace/okx_trading_platform_sample/deploy/containers
-docker compose up --build
+docker compose --profile runtime up --build
 ```
 
 Ports:
@@ -64,69 +82,100 @@ docker compose down
 
 ## Training Data Flow (Docker)
 
-Use the `training` profile when you want C++ to export CSV for Python training.
+Use the `training` profile when you want C++ to export CSV and run the full Python training pipeline.
 
-### 1) Start collector mode (C++ -> CSV)
+```text
+OKX WS / historical data
+  -> C++ collector backend
+      -> parse trades/books5
+      -> maintain rolling state
+      -> build feature
+      -> future label
+      -> dataset export
+  -> Python training
+```
 
-`backend-cpp-collector` runs:
+| Stage | Input | Output | Tool |
+| --- | --- | --- | --- |
+| Market | Order book / Trades | Raw data | OKX WebSocket |
+| Data | Raw stream | Structured dataset | Python / C++ |
+| Feature | Raw data | Feature vector | NumPy / Pandas |
+| Label | Feature + future price | `y` (`up/down/neutral`) | Python |
+| Model | `X`, `y` | Prediction model | XGBoost / PyTorch CNN / LSTM / Transformer |
+| System | Model + stream | Trading signal | C++ + gRPC |
 
-`hello_world --disable-grpc --csv-out /data/market_stream_btcusdt.csv --duration-sec ${COLLECT_DURATION_SEC:-3600}`
-
-and writes to host path:
-
-`../../data/market_stream_btcusdt.csv`
+### Run the full training pipeline
 
 ```bash
 cd /Volumes/Dev/Workspace/okx_trading_platform_sample/deploy/containers
-docker compose --profile training up --build backend-cpp-collector
+docker compose --profile training up --build model-trainer
 ```
+
+This starts the training chain in order:
+
+```text
+OKX WS / historical data -> C++ collector backend -> feature CSV export -> labeling -> Python training
+```
+
+### 1) Collector mode (C++ -> CSV)
+
+`backend-cpp-collector` runs the C++ backend in collector mode:
+
+`hello_world --disable-grpc --csv-out /data/books_trades_btcusdt.csv --duration-sec ${COLLECT_DURATION_SEC:-600}`
+
+and writes to host path:
+
+`../../data/books_trades_btcusdt.csv`
+
+By default, the collector subscribes to OKX order book and trade channels, including `books5` and `trades`, maintains the same rolling feature state used by runtime, and exports structured rows to CSV.
 
 Override duration (example: 15 minutes):
 
 ```bash
-COLLECT_DURATION_SEC=900 docker compose --profile training up --build backend-cpp-collector
+COLLECT_DURATION_SEC=900 docker compose --profile training up --build model-trainer
 ```
 
-Stop it after you have enough rows with `Ctrl+C` (or `docker compose --profile training stop backend-cpp-collector`).
+Stop the collector early with `Ctrl+C` only if you are running `backend-cpp-collector` by itself. The full pipeline waits for the collector to complete successfully.
 
-### 2) Start trainer container
+### 2) Feature builder (optional)
 
-```bash
-docker compose --profile training up -d ml-trainer
-```
+`feature-builder` reads raw ticks from:
 
-### 3) Build features
+`/app/data/books_trades_btcusdt.csv`
 
-```bash
-docker compose --profile training exec ml-trainer \
-  python ml_pipeline/build_realtime_features.py \
-  --csv /app/data/market_stream_btcusdt.csv \
-  --symbol BTC-USDT \
-  --channels trades,books5 \
-  --out-csv /app/data/features_btcusdt.csv
-```
+and writes:
 
-### 4) Create labels (`up/down/neutral`)
+`/app/data/features_btcusdt.csv`
 
-```bash
-docker compose --profile training exec ml-trainer \
-  python ml_pipeline/create_future_labels.py \
-  --features-csv /app/data/features_btcusdt.csv \
-  --horizon-sec 30 \
-  --eps 0.0001 \
-  --out-csv /app/data/train_dataset_btcusdt_h30.csv
-```
+Use this step only when you want to rebuild features from raw tick CSV in Python. The default training flow now reads C++-exported feature CSV directly in the label step.
 
-### 5) Train model artifact
+Override defaults with `RAW_TICKS_CSV`, `FEATURES_CSV`, `TRAIN_SYMBOL`, and `TRAIN_CHANNELS`. If symbol/channel filters remove every collected row, the builder logs the available symbols/channels and falls back to all collected rows. If the CSV only has a header, increase `COLLECT_DURATION_SEC` and verify the collector is receiving OKX ticks.
 
-```bash
-docker compose --profile training exec ml-trainer \
-  python ml_pipeline/train_better_model.py \
-  --dataset-csv /app/data/train_dataset_btcusdt_h30.csv \
-  --model-out /app/models/pulse_tree_v1.joblib
-```
+### 3) Label maker
 
-### 6) Stop training profile services
+`label-maker` reads features and writes:
+
+`/app/data/train_dataset_btcusdt_h30.csv`
+
+Default feature input:
+
+`/app/data/books_trades_btcusdt.features.csv`
+
+Override defaults with `LABEL_HORIZON_SEC`, `LABEL_EPS`, and `TRAIN_DATASET_CSV`.
+Set `LABEL_SPREAD_EPS_MULTIPLIER` to control the dynamic neutral band; default is `0.3`, meaning `eps = 0.3 * spread` when spread is available.
+
+### 4) Model trainer
+
+`model-trainer` trains the model set used by runtime inference and offline comparison. By default it trains:
+
+- `/app/models/pulse_xgboost_v1.joblib`
+- `/app/models/pulse_lstm_v1.pt`
+- `/app/models/pulse_cnn_v1.pt`
+- `/app/models/pulse_transformer_v1.pt`
+
+Override the set with `TRAIN_MODEL_TYPES` and the directory with `MODEL_OUT_DIR`.
+
+### Stop training profile services
 
 ```bash
 docker compose --profile training down
@@ -134,7 +183,7 @@ docker compose --profile training down
 
 ## Notes
 
-- `inference-python` expects model at `/app/models/pulse_tree_v1.joblib` by default.
-- If you use another model file, update `MODEL_PATH` in `docker-compose.yml`.
+- `inference-python` expects model at `/app/models/pulse_lstm_v1.pt` by default.
+- Use `MODEL_PATH=/app/models/pulse_xgboost_v1.joblib`, `MODEL_PATH=/app/models/pulse_cnn_v1.pt`, or `MODEL_PATH=/app/models/pulse_transformer_v1.pt` to run a different trained architecture.
 - `backend-cpp` image build is heavier because it compiles C++ + vcpkg dependencies.
 - `backend-cpp` now selects the matching CMake preset automatically for Docker `amd64` and `arm64` builds, then starts the gRPC server on port `50051`.

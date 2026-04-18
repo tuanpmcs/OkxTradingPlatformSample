@@ -54,13 +54,24 @@ For a ready-to-paste Lovable prompt, use:
 - `Connect Stream`: connects to current URL input (default local C++ gRPC stream).
 - `Use Simulated`: starts a local random-walk stream for quick UI testing.
 - `Stop`: disconnects and halts updates.
+- Subscription rows are sent at runtime through `MarketData.Subscribe`; the C++ backend uses YAML subscriptions only as startup defaults.
 
 ## Strategy Auto Trade
 
+- Model selector supports:
+  - `XGBoost`
+  - `LSTM`
+  - `CNN`
+  - `Transformer`
+- Config selector supports:
+  - `Market Maker`
+  - `Alpha Fast`
+  - `Ultra Alpha`
 - Strategy selector supports:
   - `Market Making`: spread-aware quoting logic with adverse-selection filter.
   - `Short-Term Alpha`: imbalance-driven directional entries (`LONG/SHORT`) and fast exits.
 - `Start Auto` now opens and closes positions automatically using strategy conditions and `Hold (ms)`.
+- The Account & Execution panel keeps only `Start Auto`, `Stop Auto`, and `Reset Account`.
 - Controls:
   - `Imbalance Threshold`
   - `Adverse/Predict Threshold`

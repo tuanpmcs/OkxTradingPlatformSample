@@ -14,6 +14,8 @@ const grpcChartCanvas = document.getElementById('grpc-chart-canvas');
 const grpcChartMeta = document.getElementById('grpc-chart-meta');
 const simAccountInput = document.getElementById('sim-account-input');
 const simCapitalInput = document.getElementById('sim-capital-input');
+const simModelSelect = document.getElementById('sim-model-select');
+const simConfigSelect = document.getElementById('sim-config-select');
 const simStrategySelect = document.getElementById('sim-strategy-select');
 const simHorizonInput = document.getElementById('sim-horizon-input');
 const simHoldMsInput = document.getElementById('sim-hold-ms-input');
@@ -21,20 +23,16 @@ const simRangeInput = document.getElementById('sim-range-input');
 const simImbalanceInput = document.getElementById('sim-imbalance-input');
 const simAdverseInput = document.getElementById('sim-adverse-input');
 const simMinSpreadInput = document.getElementById('sim-min-spread-input');
+const simModelBadge = document.getElementById('sim-model-badge');
 const simModeBadge = document.getElementById('sim-mode-badge');
 const simAutoBadge = document.getElementById('sim-auto-badge');
 const simRuleHint = document.getElementById('sim-rule-hint');
 const simAdverseTitle = document.getElementById('sim-adverse-title');
 const simMinSpreadWrap = document.getElementById('sim-min-spread-wrap');
 const simAdverseWrap = document.getElementById('sim-adverse-wrap');
-const simInferBtn = document.getElementById('sim-infer-btn');
-const simOpenBtn = document.getElementById('sim-open-btn');
-const simCloseBtn = document.getElementById('sim-close-btn');
 const simAutoStartBtn = document.getElementById('sim-auto-start-btn');
 const simAutoStopBtn = document.getElementById('sim-auto-stop-btn');
 const simAccountResetBtn = document.getElementById('sim-account-reset-btn');
-const simPresetFastBtn = document.getElementById('sim-preset-fast-btn');
-const simPresetUltraBtn = document.getElementById('sim-preset-ultra-btn');
 const simSummary = document.getElementById('sim-summary');
 const simSignal = document.getElementById('sim-signal');
 const simPredPrice = document.getElementById('sim-pred-price');
@@ -73,6 +71,53 @@ const PREBUILT_MODEL = {
     momentum20: 0.38,
     volatility20: -0.25,
     range20: -0.06
+  }
+};
+const MODEL_OPTIONS = {
+  xgboost: 'XGBoost',
+  lstm: 'LSTM',
+  cnn: 'CNN',
+  transformer: 'Transformer'
+};
+const CONFIG_PROFILES = {
+  market_maker: {
+    label: 'Market Maker',
+    strategy: 'market_making',
+    capital: '5,000',
+    holdMs: 500,
+    horizonSec: 30,
+    autoRangeSec: 60,
+    imbalanceThreshold: 0.2,
+    adverseThreshold: 0.0006,
+    minSpreadBps: 0.8,
+    alphaCooldownMs: 250,
+    summary: 'Config Market Maker applied: balanced quoting with adverse-selection protection.'
+  },
+  alpha_fast: {
+    label: 'Alpha Fast',
+    strategy: 'short_term_alpha',
+    capital: '10,000',
+    holdMs: 140,
+    horizonSec: 20,
+    autoRangeSec: 300,
+    imbalanceThreshold: 0.06,
+    adverseThreshold: 0.00005,
+    minSpreadBps: 0.8,
+    alphaCooldownMs: 220,
+    summary: 'Config Alpha Fast applied: active entries with moderate aggression.'
+  },
+  alpha_ultra: {
+    label: 'Ultra Alpha',
+    strategy: 'short_term_alpha',
+    capital: '20,000',
+    holdMs: 80,
+    horizonSec: 10,
+    autoRangeSec: 420,
+    imbalanceThreshold: 0.03,
+    adverseThreshold: 0.00002,
+    minSpreadBps: 0.6,
+    alphaCooldownMs: 120,
+    summary: 'Config Ultra Alpha applied: very aggressive, high-turnover trading.'
   }
 };
 const predictionState = {
@@ -285,7 +330,7 @@ function createSubscriptionRow(defaults = {}) {
   row.innerHTML = `
     <input class="sub-symbol" placeholder="Symbol (e.g. BTC-USDT)" value="${escapeHtml(defaults.symbol || 'BTC-USDT')}" />
     <select class="sub-channel">
-      ${CHANNEL_OPTIONS.map((channel) => `<option value="${channel}" ${channel === (defaults.channel || 'tickers') ? 'selected' : ''}>${channel}</option>`).join('')}
+      ${CHANNEL_OPTIONS.map((channel) => `<option value="${channel}" ${channel === (defaults.channel || 'books5') ? 'selected' : ''}>${channel}</option>`).join('')}
     </select>
     <button type="button" class="btn btn-ghost btn-sm remove-row-btn">Remove</button>
   `;
@@ -314,7 +359,7 @@ function getSubscriptions() {
     .filter(Boolean);
 
   if (subscriptions.length === 0) {
-    return [{ symbol: 'BTC-USDT', channel: 'tickers' }];
+    return [{ symbol: 'BTC-USDT', channel: 'books5' }];
   }
   return subscriptions;
 }
@@ -402,7 +447,9 @@ function calculatePrediction(series) {
     signal,
     score: bounded,
     lastPrice: last,
-    predictedPrice
+    predictedPrice,
+    modelName: PREBUILT_MODEL.name,
+    detail: 'local linear fallback model'
   };
 }
 
@@ -435,14 +482,15 @@ function buildPredictionPayload(series) {
     symbol,
     channel,
     horizonSec,
+    modelType: cfg.modelType,
     strategyMode: cfg.strategy,
     holdMs: cfg.holdMs,
     mmAdverseRetThreshold: cfg.adverseThreshold,
     mmOneSidedImbalanceThreshold: cfg.imbalanceThreshold,
     minSpreadBps: cfg.minSpreadBps,
     alphaImbalanceThreshold: cfg.imbalanceThreshold,
-    alphaPredRetThreshold: Math.max(0.00001, cfg.adverseThreshold * 0.2),
-    maxEntrySpreadBps: Math.max(3, cfg.minSpreadBps * 3),
+    alphaPredRetThreshold: cfg.alphaPredRetThreshold,
+    maxEntrySpreadBps: cfg.maxEntrySpreadBps,
     points
   };
 }
@@ -467,8 +515,10 @@ async function requestPrediction(series, force = false) {
       return predictionState.lastResult;
     }
     predictionState.lastError = response?.error || 'gRPC prediction failed';
+    predictionState.lastResult = null;
   } catch (error) {
     predictionState.lastError = error?.message || String(error);
+    predictionState.lastResult = null;
   } finally {
     predictionState.pending = false;
   }
@@ -530,27 +580,41 @@ function parsePositiveNumber(inputEl, fallback) {
 }
 
 function readStrategyConfig() {
+  const profileKey = String(simConfigSelect?.value || 'market_maker');
+  const profile = CONFIG_PROFILES[profileKey] || CONFIG_PROFILES.market_maker;
+  const adverseThreshold = parsePositiveNumber(simAdverseInput, profile.adverseThreshold);
+  const minSpreadBps = parsePositiveNumber(simMinSpreadInput, profile.minSpreadBps);
   return {
+    modelType: String(simModelSelect?.value || 'xgboost'),
+    profile: profileKey,
     strategy: String(simStrategySelect?.value || 'market_making'),
     holdMs: Math.max(50, Math.round(parsePositiveNumber(simHoldMsInput, 500))),
     imbalanceThreshold: parsePositiveNumber(simImbalanceInput, 0.2),
-    adverseThreshold: parsePositiveNumber(simAdverseInput, 0.0006),
-    minSpreadBps: parsePositiveNumber(simMinSpreadInput, 0.8),
-    alphaCooldownMs: 250
+    adverseThreshold,
+    minSpreadBps,
+    alphaPredRetThreshold: Math.max(0.00001, adverseThreshold * 0.2),
+    maxEntrySpreadBps: Math.max(3, minSpreadBps * 3),
+    alphaCooldownMs: profile.alphaCooldownMs
   };
 }
 
 function refreshStrategyUi() {
   const cfg = readStrategyConfig();
   const isMM = cfg.strategy === 'market_making';
+  const profile = CONFIG_PROFILES[cfg.profile] || CONFIG_PROFILES.market_maker;
 
+  if (simModelBadge) {
+    simModelBadge.textContent = `Model: ${MODEL_OPTIONS[cfg.modelType] || 'XGBoost'}`;
+  }
   if (simModeBadge) {
-    simModeBadge.textContent = isMM ? 'Mode: Market Making' : 'Mode: Short-Term Alpha';
+    simModeBadge.textContent = `Mode: ${profile.label}`;
   }
   if (simRuleHint) {
     simRuleHint.textContent = isMM
       ? 'Quote both sides, skip adverse windows.'
-      : 'Trade direction on imbalance, exit quickly.';
+      : cfg.profile === 'alpha_ultra'
+        ? 'Ultra fast alpha entries with tight confirmation.'
+        : 'Fast alpha entries on imbalance and model confirmation.';
   }
   if (simAdverseTitle) {
     simAdverseTitle.textContent = isMM ? 'Adverse Filter' : 'Model Confirm Threshold';
@@ -572,23 +636,18 @@ function refreshAutoBadge() {
   simAutoBadge.textContent = autoTradeState.running ? 'Auto: RUNNING' : 'Auto: OFF';
 }
 
-function applyAlphaPreset(level = 'fast') {
-  simStrategySelect.value = 'short_term_alpha';
-  if (level === 'ultra') {
-    simCapitalInput.value = '20,000';
-    simHoldMsInput.value = '80';
-    simImbalanceInput.value = '0.03';
-    simAdverseInput.value = '0.00002';
-    simRangeInput.value = '420';
-    simSummary.textContent = 'Preset Alpha Ultra applied: very aggressive, high turnover, higher drawdown risk.';
-  } else {
-    simCapitalInput.value = '10,000';
-    simHoldMsInput.value = '140';
-    simImbalanceInput.value = '0.06';
-    simAdverseInput.value = '0.00005';
-    simRangeInput.value = '300';
-    simSummary.textContent = 'Preset Alpha Fast applied: active entries with moderate aggression.';
-  }
+function applyConfigProfile(profileKey = 'alpha_fast') {
+  const profile = CONFIG_PROFILES[profileKey] || CONFIG_PROFILES.alpha_fast;
+  if (simConfigSelect) simConfigSelect.value = profileKey;
+  simStrategySelect.value = profile.strategy;
+  simCapitalInput.value = profile.capital;
+  simHoldMsInput.value = String(profile.holdMs);
+  simHorizonInput.value = String(profile.horizonSec);
+  simImbalanceInput.value = String(profile.imbalanceThreshold);
+  simAdverseInput.value = String(profile.adverseThreshold);
+  simMinSpreadInput.value = String(profile.minSpreadBps);
+  simRangeInput.value = String(profile.autoRangeSec);
+  simSummary.textContent = profile.summary;
   formatCapitalInput();
   refreshStrategyUi();
 }
@@ -874,9 +933,6 @@ async function evaluateHorizonDecision(series) {
   simState.pendingDecision = true;
   try {
     let pred = await requestPrediction(series, true);
-    if (!pred) {
-      pred = predictionState.lastResult || calculatePrediction(series);
-    }
 
     const lastPoint = Array.isArray(series) && series.length > 0 ? series[series.length - 1] : null;
     const currentPrice = lastPoint ? Number(lastPoint.price) : simState.entryPrice;
@@ -917,9 +973,6 @@ async function evaluateHorizonDecision(series) {
     const refreshedSeries = resolved?.series || series;
     let nextPred = await requestPrediction(refreshedSeries, true);
     if (!nextPred) {
-      nextPred = predictionState.lastResult || calculatePrediction(refreshedSeries);
-    }
-    if (!nextPred) {
       return;
     }
 
@@ -957,9 +1010,6 @@ async function openSimulation() {
   const resolved = resolveActiveSeries();
   const series = resolved?.series;
   let pred = await requestPrediction(series, true);
-  if (!pred) {
-    pred = calculatePrediction(series);
-  }
   const capital = parseCapitalInput();
   const horizonSec = Number(simHorizonInput?.value || 30);
   if (!pred) {
@@ -1001,7 +1051,8 @@ function startAutoTradingSession() {
   renderAutoSessionStats();
   refreshAutoBadge();
   const cfg = readStrategyConfig();
-  simSummary.textContent = `Auto trading started for ${rangeSec}s | Strategy: ${cfg.strategy} | Hold: ${cfg.holdMs}ms`;
+  const profile = CONFIG_PROFILES[cfg.profile] || CONFIG_PROFILES.market_maker;
+  simSummary.textContent = `Auto trading started for ${rangeSec}s | Config: ${profile.label} | Model: ${MODEL_OPTIONS[cfg.modelType] || 'XGBoost'} | Hold: ${cfg.holdMs}ms`;
 }
 
 function stopAutoTradingSession(reason = 'Auto trading stopped') {
@@ -1030,9 +1081,6 @@ async function runInferenceNow() {
 
   let prediction = await requestPrediction(series, true);
   if (!prediction) {
-    prediction = calculatePrediction(series);
-  }
-  if (!prediction) {
     simSummary.textContent = 'Inference failed: no prediction available.';
     return;
   }
@@ -1057,7 +1105,7 @@ function updatePredictionAndSimulation(series) {
     simSummary.textContent = 'No active series data yet. Connect stream and wait for ticks.';
   }
   requestPrediction(series, false);
-  const prediction = predictionState.lastResult || calculatePrediction(series);
+  const prediction = predictionState.lastResult;
   if (!prediction) {
     simSignal.textContent = '-';
     simPredPrice.textContent = '-';
@@ -1066,7 +1114,7 @@ function updatePredictionAndSimulation(series) {
     simLiveEquity.textContent = '-';
     simPosition.textContent = '-';
     if (predictionState.lastError) {
-      simSummary.textContent = `Prediction service unavailable: ${predictionState.lastError} | fallback model active.`;
+      simSummary.textContent = `Prediction service unavailable: ${predictionState.lastError}.`;
     }
     return;
   }
@@ -1379,7 +1427,7 @@ function startLoop() {
 
 connectBtn.addEventListener('click', async () => {
   const subscriptions = getSubscriptions();
-  const primary = subscriptions[0] || { symbol: 'BTC-USDT', channel: 'tickers' };
+  const primary = subscriptions[0] || { symbol: 'BTC-USDT', channel: 'books5' };
   pickActiveGrpcSeriesKey(subscriptions);
   notifyChartSymbol(primary.symbol);
   await window.streamApi.start({
@@ -1393,7 +1441,7 @@ connectBtn.addEventListener('click', async () => {
 
 simulateBtn.addEventListener('click', async () => {
   const subscriptions = getSubscriptions();
-  const primary = subscriptions[0] || { symbol: 'BTC-USDT', channel: 'tickers' };
+  const primary = subscriptions[0] || { symbol: 'BTC-USDT', channel: 'books5' };
   pickActiveGrpcSeriesKey(subscriptions);
   notifyChartSymbol(primary.symbol);
   await window.streamApi.start({
@@ -1412,32 +1460,22 @@ stopBtn.addEventListener('click', async () => {
   await window.streamApi.stop();
 });
 
-simOpenBtn.addEventListener('click', async () => {
-  await openSimulation();
-});
-
-simInferBtn.addEventListener('click', async () => {
-  await runInferenceNow();
-});
-
-simCloseBtn.addEventListener('click', () => {
-  closeSimulation('Manual close executed', { recordInSession: autoTradeState.running });
-});
-
-simAutoStartBtn.addEventListener('click', () => {
+simAutoStartBtn?.addEventListener('click', () => {
   startAutoTradingSession();
 });
 
-simAutoStopBtn.addEventListener('click', () => {
+simAutoStopBtn?.addEventListener('click', () => {
   stopAutoTradingSession('Auto trading stopped by user');
 });
 
-simPresetFastBtn?.addEventListener('click', () => {
-  applyAlphaPreset('fast');
+simModelSelect?.addEventListener('change', () => {
+  predictionState.lastResult = null;
+  predictionState.lastError = '';
+  refreshStrategyUi();
 });
 
-simPresetUltraBtn?.addEventListener('click', () => {
-  applyAlphaPreset('ultra');
+simConfigSelect?.addEventListener('change', () => {
+  applyConfigProfile(simConfigSelect.value);
 });
 
 simStrategySelect?.addEventListener('change', () => {
@@ -1491,10 +1529,8 @@ addRowBtn.addEventListener('click', () => {
   subscriptionRows.appendChild(createSubscriptionRow());
 });
 
-subscriptionRows.appendChild(createSubscriptionRow({ symbol: 'BTC-USDT', channel: 'tickers' }));
-subscriptionRows.appendChild(createSubscriptionRow({ symbol: 'BTC-USDT', channel: 'trades' }));
-subscriptionRows.appendChild(createSubscriptionRow({ symbol: 'BTC-USDT', channel: 'books' }));
 subscriptionRows.appendChild(createSubscriptionRow({ symbol: 'BTC-USDT', channel: 'books5' }));
+subscriptionRows.appendChild(createSubscriptionRow({ symbol: 'BTC-USDT', channel: 'trades' }));
 notifyChartSymbol('BTC-USDT');
 pickActiveGrpcSeriesKey(getSubscriptions());
 
