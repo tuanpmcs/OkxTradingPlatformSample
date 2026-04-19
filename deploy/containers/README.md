@@ -1,15 +1,20 @@
 # Containerized Services (Trading Stack)
 
-This setup defines two Docker Compose profiles:
+This setup defines three Docker Compose profiles:
 
-- `runtime`: `OKX WS -> C++ runtime backend -> Python/SageMaker inference -> simulator / frontend`
+- `runtime`: `OKX WS -> C++ runtime backend -> Python local inference -> gateway`
+- `ui`: standalone browser frontend (`frontend/web`)
 - `training`: `OKX WS / historical data -> C++ collector backend -> dataset export -> Python training`
 
-The runtime profile includes 3 cloud-ready services:
+The runtime profile includes 3 Level 2 services:
 
 - `backend-cpp`: C++ market stream backend (gRPC on `50051`)
 - `inference-python`: Python inference server (gRPC on `50061`)
 - `web-gateway`: REST gateway (HTTP on `8080`) that forwards `/predict` to inference gRPC
+
+The `ui` profile adds:
+
+- `frontend-web`: browser-first operator UI (HTTP on `5173`)
 
 Runtime flow:
 
@@ -19,9 +24,11 @@ OKX WS
       -> parse trades/books5
       -> maintain rolling state
       -> build feature
-      -> call Python/SageMaker inference
+      -> call local Python inference (gRPC)
       -> receive prediction
-      -> simulator / frontend
+      -> stream/risk output
+  -> web-gateway (/predict)
+  -> frontend-web (optional)
 ```
 
 ## Files
@@ -29,6 +36,7 @@ OKX WS
 - `Dockerfile.backend-cpp`
 - `Dockerfile.inference-python`
 - `Dockerfile.web-gateway`
+- `Dockerfile.web-frontend`
 - `docker-compose.yml`
 - `gateway/server.js`
 
@@ -49,6 +57,17 @@ Ports:
 - C++ backend: `127.0.0.1:50051`
 - Python inference: `127.0.0.1:50061`
 - Web gateway: `127.0.0.1:8080`
+
+Run runtime + web UI together:
+
+```bash
+cd /Volumes/Dev/Workspace/okx_trading_platform_sample/deploy/containers
+docker compose --profile runtime --profile ui up --build
+```
+
+Additional port:
+
+- Web frontend: `127.0.0.1:5173`
 
 ## Health check (gateway)
 
@@ -137,21 +156,7 @@ COLLECT_DURATION_SEC=900 docker compose -f deploy/containers/docker-compose.yml 
 
 Stop the collector early with `Ctrl+C` only if you are running `backend-cpp-collector` by itself. The full pipeline waits for the collector to complete successfully.
 
-### 2) Feature builder (optional)
-
-`feature-builder` reads raw ticks from:
-
-`/app/data/books_trades_btcusdt.csv`
-
-and writes:
-
-`/app/data/features_btcusdt.csv`
-
-Use this step only when you want to rebuild features from raw tick CSV in Python. The default training flow now reads C++-exported feature CSV directly in the label step.
-
-Override defaults with `RAW_TICKS_CSV`, `FEATURES_CSV`, `TRAIN_SYMBOL`, and `TRAIN_CHANNELS`. If symbol/channel filters remove every collected row, the builder logs the available symbols/channels and falls back to all collected rows. If the CSV only has a header, increase `COLLECT_DURATION_SEC` and verify the collector is receiving OKX ticks.
-
-### 3) Label maker
+### 2) Label maker
 
 `label-maker` reads features and writes:
 
@@ -164,7 +169,7 @@ Default feature input:
 Override defaults with `LABEL_HORIZON_SEC`, `LABEL_EPS`, and `TRAIN_DATASET_CSV`.
 Set `LABEL_SPREAD_EPS_MULTIPLIER` to control the dynamic neutral band; default is `0.3`, meaning `eps = 0.3 * spread` when spread is available.
 
-### 4) Model trainer
+### 3) Model trainer
 
 `model-trainer` trains the model set used by runtime inference and offline comparison. By default it trains:
 
@@ -183,7 +188,9 @@ docker compose -f deploy/containers/docker-compose.yml --profile training down
 
 ## Notes
 
-- `inference-python` expects model at `/app/models/pulse_lstm_v1.pt` by default.
+- `inference-python` defaults to `INSTALL_PROFILE=inference` (no torch/cuda stack) for faster build.
+- `model-trainer` uses `INSTALL_PROFILE=training` to include torch/lightgbm/catboost.
+- `inference-python` expects model at `/app/models/pulse_xgboost_v1.joblib` by default.
 - Use `MODEL_PATH=/app/models/pulse_xgboost_v1.joblib`, `MODEL_PATH=/app/models/pulse_cnn_v1.pt`, or `MODEL_PATH=/app/models/pulse_transformer_v1.pt` to run a different trained architecture.
 - `backend-cpp` image build is heavier because it compiles C++ + vcpkg dependencies.
 - `backend-cpp` now selects the matching CMake preset automatically for Docker `amd64` and `arm64` builds, then starts the gRPC server on port `50051`.

@@ -1,0 +1,15 @@
+FROM node:20-slim
+
+WORKDIR /app
+
+COPY frontend/web/package.json ./package.json
+COPY frontend/web/server.js ./server.js
+COPY frontend/web/index.html ./index.html
+COPY frontend/web/main.js ./main.js
+COPY frontend/web/styles.css ./styles.css
+
+ENV HOST=0.0.0.0
+ENV PORT=5173
+
+EXPOSE 5173
+CMD ["npm", "start"]

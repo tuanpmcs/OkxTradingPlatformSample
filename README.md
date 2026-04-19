@@ -1,198 +1,177 @@
 # OKX Trading Platform Sample
 
-An end-to-end sample trading stack for:
+Refactored multi-stage trading stack with clear separation of concerns:
 
-- streaming real-time market data from OKX
-- serving normalized ticks over gRPC from C++
-- running local ML inference over gRPC from Python
-- exposing an optional HTTP bridge for external integrations
-- visualizing and simulating strategy behavior in an Electron desktop app
+- `backend/` for low-latency C++ ingest/feature/strategy runtime
+- `ml_pipeline/` for Python data prep, labeling, training, and serving
+- `frontend/` for operator UIs (`electron` and standalone `web`)
+- `deploy/` for container and infra deployment assets
 
-## What You Get
-
-- `backend-cpp` (`hello_world`): C++ market stream service
-- `inference-python`: Python `PredictionService` gRPC server
-- `web-gateway`: Node/Express HTTP gateway (`/health`, `/predict`)
-- `desktop/`: Electron UI for stream + prediction workflows
-
-## Data Flow
-
-![](docs/flowchart.drawio.svg)
-- Proto contract: [proto/market_data.proto](proto/market_data.proto)
-
-## Kiến Trúc Ngắn Gọn
-
-Runtime:
+## Runtime Architecture
 
 ```text
 OKX WS
-  -> C++ runtime backend
-      -> parse trades/books5
-      -> maintain rolling state
-      -> build feature
-      -> call Python/SageMaker inference
-      -> receive prediction
-      -> simulator / frontend
+  -> backend/apps/market_data_main.cpp
+      -> marketdata parse + rolling features
+      -> optional CSV mirror
+      -> gRPC MarketData stream (:50051)
+  -> ml_pipeline/serving/app.py (PredictionService, :50061)
+  -> frontend/electron (operator UI)
 ```
 
-Training:
+Proto contract: `backend/proto/market_data.proto`
+
+## Level 2 (Semi-Production)
+
+- Online feature path stays in C++ runtime.
+- Local inference is selected at runtime: `grpc` or `onnx`.
+- Cloud is reserved for logs, model artifacts, and deployment automation.
+
+Example (local gRPC inference):
+
+```bash
+./build/arm64-osx-dynamic/release/bin/hello_world \
+  --grpc-port 50051 \
+  --inference-mode grpc \
+  --inference-grpc-target 127.0.0.1:50061 \
+  --inference-model-type xgboost \
+  --inference-horizon-sec 30 \
+  --inference-min-points 32
+```
+
+`pred_model`, `pred_signal`, `pred_ret`, `pred_price`, and `pred_detail` are attached to outbound stream fields.
+
+Note: `--inference-mode onnx` is wired in the C++ runtime, but this repository does not yet bundle ONNX Runtime linkage by default.
+
+## Recommended Repository Layout
 
 ```text
-OKX WS / historical data
-  -> C++ collector backend
-      -> parse trades/books5
-      -> maintain rolling state
-      -> build feature
-      -> future label
-      -> dataset export
-  -> Python training
+trading-platform/
+├── backend/
+│   ├── src/{common,marketdata,features,inference,risk,strategy,simulator}/
+│   ├── apps/
+│   │   └── market_data_main.cpp
+│   ├── proto/
+│   ├── configs/
+│   └── CMakeLists.txt
+├── ml_pipeline/
+│   ├── data/
+│   ├── features/
+│   ├── models/
+│   ├── serving/
+│   └── requirements.txt
+├── deploy/
+├── frontend/
+│   ├── web/
+│   └── electron/
+├── docs/
+└── tests/
 ```
 
-YAML is only the default subscription/config source. The frontend can request symbol/channel subscriptions at runtime through the stream API.
-
-Role split:
-
-- `backend-cpp` runs the C++ runtime path and publishes ticks/features over gRPC.
-- `backend-cpp-collector` runs the same parser and rolling feature path in collector mode, writes CSV, then exits after `COLLECT_DURATION_SEC`.
-- `inference-python` serves trained artifacts for runtime prediction.
-- Python training scripts build labels, train XGBoost/CNN/LSTM/Transformer models, and compare metrics.
-
-## Prerequisites
-
-- Docker (recommended path)
-- Node.js + npm (for `desktop` app)
-- Python 3.9+ (for local ML path)
-- CMake 3.25+, Ninja, and `vcpkg` (for local C++ path)
-
-## Quick Start (Recommended): Docker + Desktop
-
-### 1) Start backend services
+## Quick Start (Docker)
 
 ```bash
 docker compose -f deploy/containers/docker-compose.yml --profile runtime up --build
 ```
 
-Runtime profile:
-
-```text
-OKX WS -> C++ runtime backend -> Python/SageMaker inference -> simulator / frontend
-```
-
-Exposed ports:
+Ports:
 
 - `backend-cpp`: `127.0.0.1:50051`
 - `inference-python`: `127.0.0.1:50061`
 - `web-gateway`: `127.0.0.1:8080`
 
-Optional health check:
+Run runtime + standalone web UI:
 
 ```bash
-curl http://127.0.0.1:8080/health
+docker compose -f deploy/containers/docker-compose.yml --profile runtime --profile ui up --build
 ```
 
-### 2) Start desktop app (separate terminal)
+- `frontend-web`: `127.0.0.1:5173`
+
+Run Electron UI:
 
 ```bash
-cd desktop
-npm install
-npm start
+cd frontend
+npm run install:desktop
+npm run start:desktop
 ```
 
-Default targets used by the app:
+Run standalone Web UI:
 
-- stream: `grpc://127.0.0.1:50051`
-- prediction gRPC: `127.0.0.1:50061`
+```bash
+cd frontend
+npm run install:web
+npm run start:web
+```
 
-## Run Locally (Without Docker)
+Open `http://127.0.0.1:5173`.
 
-### 1) C++ backend
+Frontend split details: `frontend/README.md`.
+
+## Local Run
+
+1. C++ runtime
 
 ```bash
 export VCPKG_ROOT=$HOME/vcpkg
 cmake --workflow --preset ci-arm64-osx-dynamic-rel
-./build/arm64-osx-dynamic/release/bin/hello_world --grpc-port 50051
+./build/arm64-osx-dynamic/release/bin/hello_world --grpc-port 50051 --config backend/configs/okx_public.yaml
 ```
 
-Notes:
-
-- For Linux presets, see [CMakePresets.json](CMakePresets.json).
-- Binary name is `hello_world`.
-
-### 2) Python inference server
+2. Python inference
 
 ```bash
-cd ml_pipeline
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python prediction_server.py --model ../models/pulse_lstm_v1.pt --host 127.0.0.1 --port 50061
+python3 -m venv ml_pipeline/.venv
+source ml_pipeline/.venv/bin/activate
+pip install -r ml_pipeline/requirements.inference.txt
+python -m ml_pipeline.serving.app --model models/pulse_lstm_v1.pt --host 127.0.0.1 --port 50061
 ```
 
-### 3) Desktop
+3. UI
 
 ```bash
-cd desktop
+cd frontend/electron
 npm install
 npm start
 ```
 
-## Service Endpoints
+4. C++ simulator / inference tools
 
-### gRPC
+```bash
+cmake --build --preset arm64-osx-dynamic-rel --target paper_trader inference_client
 
-- `MarketData.Subscribe(SubscribeRequest) returns (stream Tick)`
-- `PredictionService.Predict(PredictRequest) returns (PredictResponse)`
+./build/arm64-osx-dynamic/release/bin/inference_client \
+  --stream-target 127.0.0.1:50051 \
+  --predict-target 127.0.0.1:50061 \
+  --symbol BTC-USDT \
+  --channel books5
 
-Defined in: [proto/market_data.proto](proto/market_data.proto)
-
-### HTTP (web-gateway)
-
-- `GET /health`
-- `POST /predict`
-
-Gateway implementation: [deploy/containers/gateway/server.js](deploy/containers/gateway/server.js)
-
-## ML Pipeline (Training / Model Build)
-
-Detailed steps are documented in:
-
-- [ml_pipeline/README.md](ml_pipeline/README.md)
-
-Containerized training profile is documented in:
-
-- [deploy/containers/README.md](deploy/containers/README.md)
-
-Training profile:
-
-```text
-OKX WS / historical data -> C++ collector backend -> dataset export -> Python training
+./build/arm64-osx-dynamic/release/bin/paper_trader \
+  --stream-target 127.0.0.1:50051 \
+  --predict-target 127.0.0.1:50061 \
+  --symbol BTC-USDT \
+  --channel books5 \
+  --runtime-sec 60
 ```
 
-## Repository Layout
+## ML Pipeline
+
+Detailed usage: `ml_pipeline/README.md`
+
+Primary stage scripts:
+
+- data capture/label: `ml_pipeline/data/*`
+- feature parity/checks: `ml_pipeline/features/*`
+- training/eval/export: `ml_pipeline/models/*`
+- serving: `ml_pipeline/serving/*`
+
+Compatibility wrappers are still available at legacy `ml_pipeline/*.py` script paths.
+
+## C++ Style
+
+Code is colocated by module for readability:
 
 ```text
-.
-├── main.cpp
-├── proto/
-├── ml_pipeline/
-├── desktop/
-├── deploy/
-│   └── containers/
-├── docs/
-└── models/
+backend/src/module/foo.hpp
+backend/src/module/foo.cpp
 ```
-
-## Troubleshooting
-
-- If `desktop` cannot connect to stream:
-  - verify `backend-cpp` is listening on `127.0.0.1:50051`
-  - check container logs: `docker logs backend-cpp`
-- If `/predict` fails from gateway:
-  - verify `inference-python` is up on `127.0.0.1:50061`
-  - verify model file exists at `models/pulse_xgboost_v1.joblib`, `models/pulse_lstm_v1.pt`, `models/pulse_cnn_v1.pt`, or `models/pulse_transformer_v1.pt`
-- First C++ Docker build can take longer due to dependency compilation.
-
-## Notes
-
-- `web-gateway` is an API bridge, not a visual frontend.
-- `desktop/README.md` has additional UI-specific usage details.

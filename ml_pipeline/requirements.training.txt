@@ -1,0 +1,5 @@
+-r requirements.inference.txt
+torch>=2.2
+lightgbm>=4.3
+catboost>=1.2
+matplotlib>=3.7

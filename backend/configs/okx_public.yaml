@@ -1,0 +1,22 @@
+exchange: "okx"
+
+network:
+  forced_ip: ""
+  reconnect_ms: 5000
+  ping_interval_ms: 15000
+  stale_timeout_ms: 1000
+  pong_timeout_ms: 5000
+
+websocket_endpoint:
+  public_endpoint:
+    ws_url: "wss://ws.okx.com:8443/ws/v5/public"
+    subscriptions:
+      - instId: "BTC-USDT"
+        channel: "trades"
+      - instId: "BTC-USDT"
+        channel: "books"
+  business_endpoint:
+    ws_url: "wss://ws.okx.com:8443/ws/v5/business"
+    subscriptions:
+      - instId: "BTC-USDT"
+        channel: "trades-all"

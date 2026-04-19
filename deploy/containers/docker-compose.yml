@@ -1,9 +1,11 @@
 services:
-  # Python runtime inference: serves trained artifacts over PredictionService gRPC.
+  # Level 2 runtime: local Python inference behind gRPC.
   inference-python:
     build:
       context: ../../
       dockerfile: deploy/containers/Dockerfile.inference-python
+      args:
+        INSTALL_PROFILE: inference
     image: okx-trading/inference-python:local
     container_name: inference-python
     environment:
@@ -17,15 +19,34 @@ services:
       - runtime
     restart: unless-stopped
 
-  # C++ runtime backend: OKX WS -> parse trades/books -> rolling features -> gRPC stream.
+  # Level 2 runtime: C++ ingest + feature builder + strategy stream.
   backend-cpp:
     build:
       context: ../../
       dockerfile: deploy/containers/Dockerfile.backend-cpp
     image: okx-trading/backend-cpp:local
     container_name: backend-cpp
+    command:
+      - "--grpc-port"
+      - "50051"
+      - "--config"
+      - "/opt/app/configs/okx_public.yaml"
+      - "--inference-mode"
+      - "grpc"
+      - "--inference-grpc-target"
+      - "inference-python:50061"
+      - "--inference-model-type"
+      - "${INFERENCE_MODEL_TYPE:-xgboost}"
+      - "--inference-horizon-sec"
+      - "${INFERENCE_HORIZON_SEC:-30}"
+      - "--inference-timeout-ms"
+      - "${INFERENCE_TIMEOUT_MS:-1200}"
+      - "--inference-interval-ms"
+      - "${INFERENCE_INTERVAL_MS:-200}"
+      - "--inference-min-points"
+      - "${INFERENCE_MIN_POINTS:-32}"
     volumes:
-      - .:/app
+      - ../../backend/configs:/opt/app/configs:ro
     ports:
       - "50051:50051"
     profiles:
@@ -34,7 +55,7 @@ services:
       - inference-python
     restart: unless-stopped
 
-  # Optional HTTP adapter for tools and external integrations.
+  # HTTP adapter for web clients and external tools.
   web-gateway:
     build:
       context: ../../
@@ -43,13 +64,32 @@ services:
     container_name: web-gateway
     environment:
       PORT: "8080"
-      PRED_GRPC_TARGET: inference-python:50061
+      PRED_GRPC_TARGET: backend-cpp:50051
+      MARKET_GRPC_TARGET: backend-cpp:50051
     ports:
       - "8080:8080"
     profiles:
       - runtime
     depends_on:
-      - backend-cpp
+      - inference-python
+    restart: unless-stopped
+
+  # Browser-first UI (independent). Runs local simulation by default.
+  frontend-web:
+    build:
+      context: ../../
+      dockerfile: deploy/containers/Dockerfile.web-frontend
+    image: okx-trading/frontend-web:local
+    container_name: frontend-web
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "5173"
+    ports:
+      - "5173:5173"
+    profiles:
+      - ui
+    depends_on:
+      - web-gateway
     restart: unless-stopped
 
   # C++ collector backend: same parser/feature path, but writes CSV and exits after duration.
@@ -76,11 +116,13 @@ services:
     build:
       context: ../../
       dockerfile: deploy/containers/Dockerfile.inference-python
+      args:
+        INSTALL_PROFILE: inference
     image: okx-trading/inference-python:local
     container_name: label-maker
     command:
       - "python"
-      - "ml_pipeline/create_future_labels.py"
+      - "ml_pipeline/data/build_labels.py"
       - "--features-csv"
       - "${FEATURES_CSV:-/app/data/books_trades_btcusdt.features.csv}"
       - "--horizon-sec"
@@ -108,11 +150,13 @@ services:
     build:
       context: ../../
       dockerfile: deploy/containers/Dockerfile.inference-python
-    image: okx-trading/inference-python:local
+      args:
+        INSTALL_PROFILE: training
+    image: okx-trading/trainer-python:local
     container_name: model-trainer
     command:
       - "python"
-      - "ml_pipeline/train_model.py"
+      - "ml_pipeline/models/train_xgb.py"
       - "--dataset-csv"
       - "${TRAIN_DATASET_CSV:-/app/data/train_dataset_btcusdt_h30.csv}"
       - "--model-out-dir"

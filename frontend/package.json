@@ -1,0 +1,12 @@
+{
+  "name": "okx-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Frontend launcher for desktop and web apps",
+  "scripts": {
+    "start:web": "npm --prefix web start",
+    "start:desktop": "npm --prefix electron start",
+    "install:web": "npm --prefix web install",
+    "install:desktop": "npm --prefix electron install"
+  }
+}

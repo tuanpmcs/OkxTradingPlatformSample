@@ -1,27 +1,41 @@
+# syntax=docker/dockerfile:1.7
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /app
+ARG TARGETARCH
+ARG INSTALL_PROFILE=inference
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 COPY ml_pipeline/requirements.txt ./requirements.txt
-RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
+COPY ml_pipeline/requirements.inference.txt ./requirements.inference.txt
+COPY ml_pipeline/requirements.training.txt ./requirements.training.txt
+RUN --mount=type=cache,id=pip-${TARGETARCH}-${INSTALL_PROFILE},target=/root/.cache/pip \
+    case "${INSTALL_PROFILE}" in \
+      inference) REQ_FILE="requirements.inference.txt" ;; \
+      training) REQ_FILE="requirements.training.txt" ;; \
+      full) REQ_FILE="requirements.txt" ;; \
+      *) echo "Unsupported INSTALL_PROFILE=${INSTALL_PROFILE}. Use: inference|training|full" && exit 1 ;; \
+    esac \
+    && pip install -r "${REQ_FILE}"
 
 COPY ml_pipeline ./ml_pipeline
-COPY proto ./proto
+COPY backend/proto ./backend/proto
 
 # Default model path can be overridden per deployment.
 # Prefer a lighter tree model artifact for container memory safety.
 ENV MODEL_PATH=/app/models/pulse_xgboost_v1.joblib
 ENV MODEL_DIR_PATH=/app/models
+ENV SERVING_MODE=sagemaker-http
 ENV OMP_NUM_THREADS=1
 ENV OPENBLAS_NUM_THREADS=1
 ENV MKL_NUM_THREADS=1
 ENV NUMEXPR_NUM_THREADS=1
 
-EXPOSE 50061
-CMD ["sh", "-c", "python ml_pipeline/prediction_server.py --model ${MODEL_PATH} --model-dir ${MODEL_DIR_PATH} --host 0.0.0.0 --port 50061"]
+EXPOSE 8080
+CMD ["sh", "-c", "if [ \"${SERVING_MODE}\" = \"grpc\" ]; then python -m ml_pipeline.serving.app --model ${MODEL_PATH} --model-dir ${MODEL_DIR_PATH} --host 0.0.0.0 --port 50061; else python -m ml_pipeline.serving.sagemaker_http --model ${MODEL_PATH} --model-dir ${MODEL_DIR_PATH} --host 0.0.0.0 --port 8080; fi"]

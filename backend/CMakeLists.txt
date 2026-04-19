@@ -1,0 +1,108 @@
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+
+set(GIT_SHA "Unknown" CACHE STRING "SHA this build was generated from")
+string(SUBSTRING "${GIT_SHA}" 0 8 GIT_SHORT_SHA)
+
+if(MSVC)
+    add_compile_options(/bigobj)
+endif()
+
+option(HELLO_WORLD_BUILD_BENCHMARKS "Build benchmark targets" OFF)
+
+file(GLOB_RECURSE BACKEND_SOURCES
+	"${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+)
+
+find_package(boost_headers CONFIG REQUIRED)
+find_package(boost_system CONFIG REQUIRED)
+find_package(boost_url CONFIG REQUIRED)
+find_package(OpenSSL REQUIRED)
+find_package(spdlog CONFIG REQUIRED)
+find_package(simdjson CONFIG REQUIRED)
+find_package(Protobuf CONFIG REQUIRED)
+find_package(gRPC CONFIG REQUIRED)
+find_package(yaml-cpp CONFIG REQUIRED)
+
+set(PROTO_FILE ${CMAKE_CURRENT_SOURCE_DIR}/proto/market_data.proto)
+set(PROTO_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
+file(MAKE_DIRECTORY ${PROTO_GEN_DIR})
+
+set(PROTO_SRCS
+    ${PROTO_GEN_DIR}/market_data.pb.cc
+    ${PROTO_GEN_DIR}/market_data.grpc.pb.cc
+)
+set(PROTO_HDRS
+    ${PROTO_GEN_DIR}/market_data.pb.h
+    ${PROTO_GEN_DIR}/market_data.grpc.pb.h
+)
+
+add_custom_command(
+    OUTPUT ${PROTO_SRCS} ${PROTO_HDRS}
+    COMMAND protobuf::protoc
+    ARGS
+        --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/proto
+        --cpp_out=${PROTO_GEN_DIR}
+        --grpc_out=${PROTO_GEN_DIR}
+        --plugin=protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
+        ${PROTO_FILE}
+    DEPENDS ${PROTO_FILE}
+    VERBATIM
+)
+
+add_library(market_data_proto ${PROTO_SRCS} ${PROTO_HDRS})
+target_include_directories(market_data_proto PUBLIC ${PROTO_GEN_DIR})
+target_link_libraries(market_data_proto PUBLIC protobuf::libprotobuf gRPC::grpc++)
+
+add_library(backend_core STATIC ${BACKEND_SOURCES})
+target_include_directories(backend_core PUBLIC
+	${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(backend_core PUBLIC
+	Boost::headers
+	Boost::system
+	Boost::url
+	OpenSSL::SSL
+	OpenSSL::Crypto
+	spdlog::spdlog
+	simdjson::simdjson
+	yaml-cpp::yaml-cpp
+	market_data_proto
+)
+
+function(add_backend_app target_name main_file)
+	add_executable(${target_name} ${main_file})
+	target_link_libraries(${target_name} PRIVATE backend_core)
+	target_compile_definitions(${target_name} PRIVATE
+		GIT_SHORT_SHA="${GIT_SHORT_SHA}"
+	)
+endfunction()
+
+add_backend_app(hello_world ${CMAKE_CURRENT_SOURCE_DIR}/apps/market_data_main.cpp)
+add_backend_app(paper_trader ${CMAKE_CURRENT_SOURCE_DIR}/apps/paper_trader_main.cpp)
+add_backend_app(inference_client ${CMAKE_CURRENT_SOURCE_DIR}/apps/inference_client_main.cpp)
+add_backend_app(feature_export ${CMAKE_CURRENT_SOURCE_DIR}/apps/feature_export_main.cpp)
+
+if(HELLO_WORLD_BUILD_BENCHMARKS)
+    find_package(benchmark CONFIG REQUIRED)
+
+    add_executable(main_bench
+        ${CMAKE_CURRENT_SOURCE_DIR}/../benchmarks/main_benchmark.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/common/types.cpp
+    )
+
+    target_include_directories(main_bench PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+
+    target_link_libraries(main_bench PRIVATE
+        benchmark::benchmark
+    )
+
+    target_compile_definitions(main_bench PRIVATE
+        HELLO_WORLD_BENCH_CMD="$<TARGET_FILE:hello_world> --bench-main > /dev/null 2>&1"
+    )
+
+    add_dependencies(main_bench hello_world)
+endif()

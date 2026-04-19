@@ -62,10 +62,11 @@ x64/
 vcpkg_installed/
 
 # Node / Electron
-desktop/node_modules/
-desktop/.npm/
-desktop/dist/
-desktop/.cache/
+frontend/electron/node_modules/
+frontend/electron/.npm/
+frontend/electron/dist/
+frontend/electron/.cache/
+frontend/electron/lovable-export/dist/
 
 # Python
 .venv/
@@ -77,11 +78,15 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.ipynb_checkpoints/
 
 # ML pipeline artifacts
 ml_pipeline/.venv/
+ml_pipeline/ml_pipeline/.venv/
 ml_pipeline/_generated/
 ml_pipeline/__pycache__/
+ml_pipeline/**/__pycache__/
+ml_pipeline/**/*.tmp
 
 # Data / model artifacts
 data/
