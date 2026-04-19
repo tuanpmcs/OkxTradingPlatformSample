@@ -132,7 +132,7 @@ By default, the collector subscribes to OKX order book and trade channels, inclu
 Override duration (example: 15 minutes):
 
 ```bash
-COLLECT_DURATION_SEC=900 docker compose --profile training up --build model-trainer
+COLLECT_DURATION_SEC=900 docker compose -f deploy/containers/docker-compose.yml --profile training up --build model-trainer
 ```
 
 Stop the collector early with `Ctrl+C` only if you are running `backend-cpp-collector` by itself. The full pipeline waits for the collector to complete successfully.
@@ -178,7 +178,7 @@ Override the set with `TRAIN_MODEL_TYPES` and the directory with `MODEL_OUT_DIR`
 ### Stop training profile services
 
 ```bash
-docker compose --profile training down
+docker compose -f deploy/containers/docker-compose.yml --profile training down
 ```
 
 ## Notes

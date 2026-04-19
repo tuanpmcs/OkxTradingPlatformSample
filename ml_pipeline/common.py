@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import json
 from typing import Deque
 from typing import List
 
@@ -23,7 +24,7 @@ class FeatureConfig:
     horizon_sec: int = 30
     horizon_ms: int | None = None
     trade_lookback_ms: int = 1000
-    book_channel: str = "books5"
+    book_channel: str = "books"
     trade_channel: str = "trades"
 
     def resolved_horizon_ms(self) -> int:
@@ -82,6 +83,55 @@ def _fallback_price_features(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _safe_div(num: float, den: float) -> float:
+    if abs(den) < 1e-12:
+        return 0.0
+    return num / den
+
+
+def _extract_l2_from_raw_json(raw_json: object, max_levels: int = 5) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    if not isinstance(raw_json, str) or not raw_json.strip():
+        return [], []
+    try:
+        payload = json.loads(raw_json)
+    except Exception:
+        return [], []
+
+    bids_out: list[tuple[float, float]] = []
+    asks_out: list[tuple[float, float]] = []
+    bids = payload.get("bids", [])
+    asks = payload.get("asks", [])
+
+    for lvl in bids[:max_levels]:
+        if not isinstance(lvl, (list, tuple)) or len(lvl) < 2:
+            continue
+        px = _to_float(lvl[0], 0.0)
+        sz = _to_float(lvl[1], 0.0)
+        if px > 0.0 and sz >= 0.0:
+            bids_out.append((px, sz))
+
+    for lvl in asks[:max_levels]:
+        if not isinstance(lvl, (list, tuple)) or len(lvl) < 2:
+            continue
+        px = _to_float(lvl[0], 0.0)
+        sz = _to_float(lvl[1], 0.0)
+        if px > 0.0 and sz >= 0.0:
+            asks_out.append((px, sz))
+
+    return bids_out, asks_out
+
+
+def _sum_sizes(levels: list[tuple[float, float]], n: int = 5) -> float:
+    return sum(sz for _, sz in levels[:n])
+
+
+def _weighted_depth(levels: list[tuple[float, float]], n: int = 5) -> float:
+    total = 0.0
+    for idx, (_, sz) in enumerate(levels[:n]):
+        total += sz / float(idx + 1)
+    return total
+
+
 def build_realtime_features(df: pd.DataFrame, cfg: FeatureConfig | None = None) -> pd.DataFrame:
     cfg = cfg or FeatureConfig()
     if df.empty:
@@ -98,7 +148,7 @@ def build_realtime_features(df: pd.DataFrame, cfg: FeatureConfig | None = None) 
     )
     trade_sides = out["trade_side"].astype(str).str.lower() if "trade_side" in out.columns else pd.Series("", index=out.index)
 
-    trades: Deque[tuple[int, float, float, str]] = deque()
+    trades: Deque[tuple[int, str, float, float, str]] = deque()
     feature_rows: list[dict[str, object]] = []
 
     prev_mid: float | None = None
@@ -114,26 +164,31 @@ def build_realtime_features(df: pd.DataFrame, cfg: FeatureConfig | None = None) 
         channel = _normalize_text(channels.iloc[idx])
         event_type = _normalize_text(event_types.iloc[idx])
         trade_side = _normalize_text(trade_sides.iloc[idx])
+        inst_id = str(row.get("instId", "") or row.get("instrument_name", "") or "")
 
         is_trade = (event_type == "trade") or (trade_channel and trade_channel in channel) or (channel == "trades")
         if is_trade:
             trade_size = _to_float(row.get("trade_size"), 0.0)
             trade_price = _to_float(row.get("price"), 0.0)
             if trade_size > 0.0 and trade_price > 0.0 and trade_side in {"buy", "sell"}:
-                trades.append((ts_ms, trade_price, trade_size, trade_side))
+                trades.append((ts_ms, inst_id, trade_price, trade_size, trade_side))
 
         cutoff_ms = ts_ms - lookback_ms
         while trades and trades[0][0] < cutoff_ms:
             trades.popleft()
 
-        is_books5 = (book_channel and channel == book_channel) or (channel == "books5")
-        if not is_books5:
+        is_books = (book_channel and channel == book_channel) or (channel in {"books", "books5"})
+        if not is_books:
             continue
 
         bid_px = _to_float(row.get("bidPx"), 0.0)
         ask_px = _to_float(row.get("askPx"), 0.0)
         bid_sz = _to_float(row.get("bidSz"), 0.0)
         ask_sz = _to_float(row.get("askSz"), 0.0)
+        bids_l2: list[tuple[float, float]] = []
+        asks_l2: list[tuple[float, float]] = []
+        if "raw_json" in row:
+            bids_l2, asks_l2 = _extract_l2_from_raw_json(row.get("raw_json"))
 
         mid = 0.0
         spread = 0.0
@@ -146,25 +201,26 @@ def build_realtime_features(df: pd.DataFrame, cfg: FeatureConfig | None = None) 
         if mid <= 0.0:
             continue
 
-        rel_spread = (spread / mid) if mid > 0.0 else 0.0
+        rel_spread = _safe_div(spread, mid)
         top_denom = bid_sz + ask_sz
-        imbalance1 = ((bid_sz - ask_sz) / top_denom) if top_denom > 0.0 else 0.0
+        imbalance1 = _safe_div(bid_sz - ask_sz, top_denom)
         microprice = (
             ((ask_px * bid_sz) + (bid_px * ask_sz)) / top_denom
             if (top_denom > 0.0 and bid_px > 0.0 and ask_px > 0.0)
             else mid
         )
 
-        bid_vol_1 = bid_sz
-        ask_vol_1 = ask_sz
-        bid_vol_5 = bid_vol_1
-        ask_vol_5 = ask_vol_1
-        denom5 = bid_vol_5 + ask_vol_5
-        imbalance5 = ((bid_vol_5 - ask_vol_5) / denom5) if denom5 > 0.0 else imbalance1
-
-        weighted_bid_depth = bid_vol_1
-        weighted_ask_depth = ask_vol_1
-        book_slope = 0.0
+        if bids_l2 and asks_l2:
+            bid_vol_5 = _sum_sizes(bids_l2, 5)
+            ask_vol_5 = _sum_sizes(asks_l2, 5)
+            weighted_bid_depth = _weighted_depth(bids_l2, 5)
+            weighted_ask_depth = _weighted_depth(asks_l2, 5)
+        else:
+            bid_vol_5 = bid_sz
+            ask_vol_5 = ask_sz
+            weighted_bid_depth = bid_sz
+            weighted_ask_depth = ask_sz
+        imbalance5 = _safe_div(bid_vol_5 - ask_vol_5, bid_vol_5 + ask_vol_5)
 
         trade_count = 0
         buy_count = 0
@@ -174,8 +230,10 @@ def build_realtime_features(df: pd.DataFrame, cfg: FeatureConfig | None = None) 
         sell_vol = 0.0
         trade_notional = 0.0
 
-        for t_ts, t_px, t_sz, t_side in trades:
+        for t_ts, t_inst, t_px, t_sz, t_side in trades:
             if t_ts < cutoff_ms:
+                continue
+            if inst_id and t_inst and t_inst != inst_id:
                 continue
             trade_count += 1
             trade_vol += t_sz
@@ -187,16 +245,17 @@ def build_realtime_features(df: pd.DataFrame, cfg: FeatureConfig | None = None) 
                 sell_count += 1
                 sell_vol += t_sz
 
-        trade_imbalance = ((buy_vol - sell_vol) / trade_vol) if trade_vol > 0.0 else 0.0
+        trade_imbalance = _safe_div(buy_vol - sell_vol, buy_vol + sell_vol)
         signed_vol = buy_vol - sell_vol
-        avg_trade_size = (trade_vol / trade_count) if trade_count > 0 else 0.0
         trade_vwap = (trade_notional / trade_vol) if trade_vol > 0.0 else mid
-        trade_vwap_dev = ((trade_vwap - mid) / mid) if mid > 0.0 else 0.0
+        trade_vwap_dev = _safe_div(trade_vwap - mid, mid)
 
-        mid_ret_1 = ((mid - prev_mid) / prev_mid) if (prev_mid is not None and prev_mid > 0.0) else 0.0
-        delta_mid = (mid - prev_mid) if prev_mid is not None else 0.0
-        delta_spread = (spread - prev_spread) if prev_spread is not None else 0.0
-        imbalance5_delta = (imbalance5 - prev_imbalance5) if prev_imbalance5 is not None else 0.0
+        prev_mid_price = prev_mid if prev_mid is not None else mid
+        prev_spread_price = prev_spread if prev_spread is not None else spread
+        prev_imb5 = prev_imbalance5 if prev_imbalance5 is not None else imbalance5
+        delta_mid = mid - prev_mid_price
+        delta_spread = spread - prev_spread_price
+        imbalance5_delta = imbalance5 - prev_imb5
 
         feature_rows.append(
             {
@@ -204,41 +263,61 @@ def build_realtime_features(df: pd.DataFrame, cfg: FeatureConfig | None = None) 
                 "price": mid,
                 "event_type": row.get("event_type", "order_book"),
                 "channel": row.get("channel", cfg.book_channel),
-                "instId": row.get("instId", ""),
+                "instId": inst_id,
+                # C++ feature_row parity fields:
+                "inst_id": inst_id,
+                "book_ts": ts_ms,
+                "book_recv_ts": _to_int(row.get("book_recv_ts"), _to_int(row.get("recv_ts"), ts_ms)),
+                "book_seq_id": _to_int(row.get("seqId"), _to_int(row.get("book_seq_id"), 0)),
+                "best_bid_px": bid_px,
+                "best_ask_px": ask_px,
+                "best_bid_sz": bid_sz,
+                "best_ask_sz": ask_sz,
                 "mid_price": mid,
                 "spread": spread,
                 "rel_spread": rel_spread,
                 "microprice": microprice,
-                "imbalance1": imbalance1,
-                "imbalance5": imbalance5,
-                "bid_vol_1": bid_vol_1,
-                "ask_vol_1": ask_vol_1,
-                "bid_vol_5": bid_vol_5,
-                "ask_vol_5": ask_vol_5,
+                "imbalance_l1": imbalance1,
+                "imbalance_l5": imbalance5,
+                "bid_vol_l5": bid_vol_5,
+                "ask_vol_l5": ask_vol_5,
                 "weighted_bid_depth": weighted_bid_depth,
                 "weighted_ask_depth": weighted_ask_depth,
-                "book_slope": book_slope,
+                "trade_count": trade_count,
+                "buy_count": buy_count,
+                "sell_count": sell_count,
+                "trade_volume": trade_vol,
+                "buy_volume": buy_vol,
+                "sell_volume": sell_vol,
+                "trade_imbalance": trade_imbalance,
+                "trade_vwap": trade_vwap,
+                "trade_vwap_dev_from_mid": trade_vwap_dev,
+                "prev_mid_price": prev_mid_price,
+                "prev_spread": prev_spread_price,
+                "delta_mid_price": delta_mid,
+                "delta_spread": delta_spread,
+                "delta_imbalance_l5": imbalance5_delta,
+                # Backward compatibility aliases:
+                "imbalance1": imbalance1,
+                "imbalance5": imbalance5,
+                "bid_vol_5": bid_vol_5,
+                "ask_vol_5": ask_vol_5,
                 "trade_count_lookback": trade_count,
                 "buy_count_lookback": buy_count,
                 "sell_count_lookback": sell_count,
-                "trade_volume": trade_vol,
                 "trade_vol_lookback": trade_vol,
                 "buy_vol_lookback": buy_vol,
                 "sell_vol_lookback": sell_vol,
-                "trade_imbalance": signed_vol,
-                "trade_imbalance_ratio": trade_imbalance,
-                "trade_vwap": trade_vwap,
-                "trade_vwap_dev": trade_vwap_dev,
                 "signed_vol": signed_vol,
-                "avg_trade_size": avg_trade_size,
-                "mid_prev": prev_mid if prev_mid is not None else mid,
-                "spread_prev": prev_spread if prev_spread is not None else spread,
-                "mid_ret_1": mid_ret_1,
+                "trade_imbalance_ratio": trade_imbalance,
+                "trade_vwap_dev": trade_vwap_dev,
+                "mid_prev": prev_mid_price,
+                "spread_prev": prev_spread_price,
                 "delta_mid": delta_mid,
                 "delta_spread": delta_spread,
                 "imbalance5_delta": imbalance5_delta,
                 "lookback_ms": lookback_ms,
-                # Keep training compatibility: legacy feature name maps to top-of-book imbalance.
+                # Keep training compatibility: legacy feature name maps to level-5 imbalance.
                 "imbalance": imbalance5,
             }
         )

@@ -25,7 +25,8 @@ let simulateTimer;
 let lastPrice;
 let flushTimer;
 const pointBuffer = [];
-const POINT_FLUSH_MS = 33;
+// Lower IPC batching delay for faster UI reaction.
+const POINT_FLUSH_MS = 8;
 let isIntentionalGrpcStop = false;
 let streamEpoch = 0;
 
@@ -190,41 +191,70 @@ function publishPoint(price, source) {
   });
 }
 
-function startSimulatedStream(symbol) {
+function startSimulatedStream(symbol, channel = 'books') {
   cleanupStream();
   sendStatus({
     state: 'connecting',
-    detail: `Starting simulated stream for ${symbol}`
+    detail: `Starting simulated stream for ${channel}:${symbol}`
   });
+
+  const simTickMsRaw = Number(process.env.SIM_TICK_MS || 20);
+  const simBurstRaw = Number(process.env.SIM_BURST || 2);
+  const simTickMs = Math.max(5, Number.isFinite(simTickMsRaw) ? Math.floor(simTickMsRaw) : 20);
+  const simBurst = Math.max(1, Number.isFinite(simBurstRaw) ? Math.floor(simBurstRaw) : 2);
+  const simRate = Math.floor((1000 / simTickMs) * simBurst);
 
   let current = Number.isFinite(lastPrice) ? lastPrice : 65000;
   let vol24h = 1200000;
+  let velocity = 0;
+  let regimeDrift = 0;
+  let tickCounter = 0;
   simulateTimer = setInterval(() => {
-    const drift = (Math.random() - 0.5) * 120;
-    current = Math.max(1, current + drift);
-    vol24h = Math.max(1, vol24h + Math.random() * 40);
-    const now = Date.now();
-    const change = Number.isFinite(lastPrice) ? current - lastPrice : 0;
-    lastPrice = current;
-    queuePoint({
-      ts: now,
-      price: current,
-      change,
-      source: 'simulated',
-      fields: {
-        instId: symbol,
-        bidPx: (current - 0.3).toFixed(2),
-        askPx: (current + 0.3).toFixed(2),
-        vol24h: vol24h.toFixed(2),
-        high24h: (current + 320).toFixed(2),
-        low24h: (current - 320).toFixed(2)
+    for (let i = 0; i < simBurst; i += 1) {
+      tickCounter += 1;
+      if (tickCounter % 250 === 0) {
+        regimeDrift = (Math.random() - 0.5) * 0.9;
       }
-    });
-  }, 500);
+
+      const meanAnchor = 65000;
+      const reversion = (meanAnchor - current) * 0.00006;
+      const noise = (Math.random() - 0.5) * 3.4;
+      velocity = velocity * 0.92 + regimeDrift + reversion + noise;
+      current = Math.max(1, current + velocity);
+      vol24h = Math.max(1, vol24h + Math.abs(noise) * 2.4 + Math.random() * 3.2);
+
+      const spread = 0.12 + Math.min(1.2, Math.abs(velocity) * 0.025);
+      const bid = current - spread * 0.5;
+      const ask = current + spread * 0.5;
+      const bidSz = 1.2 + Math.max(0, regimeDrift * 0.8) + Math.random() * 2.2;
+      const askSz = 1.2 + Math.max(0, -regimeDrift * 0.8) + Math.random() * 2.2;
+
+      const now = Date.now();
+      const change = Number.isFinite(lastPrice) ? current - lastPrice : 0;
+      lastPrice = current;
+      queuePoint({
+        ts: now,
+        price: current,
+        change,
+        source: 'simulated',
+        fields: {
+          channel,
+          instId: symbol,
+          bidPx: bid.toFixed(2),
+          askPx: ask.toFixed(2),
+          bidSz: bidSz.toFixed(4),
+          askSz: askSz.toFixed(4),
+          vol24h: vol24h.toFixed(2),
+          high24h: (current + 220).toFixed(2),
+          low24h: (current - 220).toFixed(2)
+        }
+      });
+    }
+  }, simTickMs);
 
   sendStatus({
     state: 'connected',
-    detail: `Simulated stream active (${symbol})`
+    detail: `Simulated stream active (${channel}:${symbol}) ~${simRate} msg/s`
   });
 }
 
@@ -243,7 +273,7 @@ function normalizeSubscriptions(config) {
 
   if (dedup.size === 0) {
     const symbol = String(config?.symbol || 'BTC-USDT').trim() || 'BTC-USDT';
-    const channel = String(config?.channel || 'books5').trim() || 'books5';
+    const channel = String(config?.channel || 'books').trim() || 'books';
     dedup.set(`${channel}:${symbol}`, { symbol, channel });
   }
 
@@ -419,7 +449,20 @@ function attachGrpcSubscription(client, config, subscription, currentEpoch) {
       return;
     }
     const ts = Number(tick.ts);
-    const fields = tick.fields ? { ...tick.fields } : {};
+    const srcFields = tick.fields || {};
+    const fields = {
+      channel: srcFields.channel,
+      instId: srcFields.instId,
+      bidPx: srcFields.bidPx,
+      askPx: srcFields.askPx,
+      bidSz: srcFields.bidSz,
+      askSz: srcFields.askSz,
+      vol24h: srcFields.vol24h,
+      high24h: srcFields.high24h,
+      low24h: srcFields.low24h,
+      side: srcFields.side,
+      seqId: srcFields.seqId
+    };
     const changedFields = Array.isArray(tick.changed_fields) ? tick.changed_fields : [];
     queuePoint({
       ts: Number.isFinite(ts) ? ts : Date.now(),
@@ -543,7 +586,9 @@ ipcMain.handle('stream:start', async (_event, config) => {
   lastPrice = undefined;
 
   if (config && config.simulated) {
-    startSimulatedStream(config.symbol || 'BTC-USDT');
+    const subs = normalizeSubscriptions(config);
+    const primary = subs[0] || { symbol: config.symbol || 'BTC-USDT', channel: 'books' };
+    startSimulatedStream(primary.symbol || 'BTC-USDT', primary.channel || 'books');
     return { ok: true };
   }
 

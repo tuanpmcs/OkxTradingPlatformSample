@@ -5,7 +5,7 @@
 namespace trading
 {
 
-feature_csv_writer::feature_csv_writer(const std::string& path)
+FeatureCsvWriter::FeatureCsvWriter(const std::string& path)
 {
 	m_out.open(path, std::ios::out | std::ios::trunc);
 	if (!m_out.is_open())
@@ -15,7 +15,7 @@ feature_csv_writer::feature_csv_writer(const std::string& path)
 	write_header();
 }
 
-void feature_csv_writer::write_header()
+void FeatureCsvWriter::write_header()
 {
 	m_out
 		<< "inst_id,book_ts,book_recv_ts,book_seq_id,"
@@ -29,7 +29,7 @@ void feature_csv_writer::write_header()
 		<< "prev_mid_price,prev_spread,delta_mid_price,delta_spread,delta_imbalance_l5\n";
 }
 
-void feature_csv_writer::write(const feature_row& row)
+void FeatureCsvWriter::write(const feature_row& row)
 {
 	m_out
 		<< row.inst_id << ','

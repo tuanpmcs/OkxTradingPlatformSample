@@ -3,24 +3,19 @@
 #include <cstdint>
 #include <utility>
 
-RuntimeStreamHandler::RuntimeStreamHandler(std::optional<double>&					 last_price,
-									   std::map<std::string, std::string>& previous_fields,
-									   std::unique_ptr<CsvTickWriter>&	 csv_writer,
-									   std::unique_ptr<GrpcServerRuntime>& grpc_server,
-									   GrpcTickHub&						 grpc_hub,
-									   const std::string&				 feature_csv_path)
+RuntimeStreamHandler::RuntimeStreamHandler(std::optional<double>& last_price,
+										   std::map<std::string, std::string>& previous_fields,
+										   std::unique_ptr<GrpcServerRuntime>& grpc_server,
+										   std::unique_ptr<trading::FeatureCsvWriter>& feature_csv_writer,
+										   GrpcTickHub& grpc_hub)
 	: _last_price(last_price)
 	, _previous_fields(previous_fields)
-	, _csv_writer(csv_writer)
 	, _grpc_server(grpc_server)
+	, _feature_csv_writer(feature_csv_writer)
 	, _grpc_hub(grpc_hub)
 	, _features(5000)
 	, _feature_builder(trading::feature_builder::config{100, true})
 {
-	if (!feature_csv_path.empty())
-	{
-		_feature_csv_writer = std::make_unique<trading::feature_csv_writer>(feature_csv_path);
-	}
 }
 
 void RuntimeStreamHandler::on_trades(const Trades& trades, const std::string& raw_json)
@@ -84,13 +79,8 @@ void RuntimeStreamHandler::emit(StreamRecord&& record)
 	_previous_fields = record.fields;
 	_last_price = record.price;
 
-	if (_csv_writer)
-	{
-		_csv_writer->write(record);
-	}
-
 	if (_grpc_server)
 	{
-		_grpc_hub.broadcast(record);
+		_grpc_hub.broadcast(std::move(record));
 	}
 }

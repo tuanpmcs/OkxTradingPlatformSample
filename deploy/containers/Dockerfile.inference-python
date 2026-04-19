@@ -9,13 +9,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY ml_pipeline/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
 
 COPY ml_pipeline ./ml_pipeline
 COPY proto ./proto
 
 # Default model path can be overridden per deployment.
-ENV MODEL_PATH=/app/models/pulse_lstm_v1.pt
+# Prefer a lighter tree model artifact for container memory safety.
+ENV MODEL_PATH=/app/models/pulse_xgboost_v1.joblib
+ENV MODEL_DIR_PATH=/app/models
+ENV OMP_NUM_THREADS=1
+ENV OPENBLAS_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV NUMEXPR_NUM_THREADS=1
 
 EXPOSE 50061
-CMD ["sh", "-c", "python ml_pipeline/prediction_server.py --model ${MODEL_PATH} --host 0.0.0.0 --port 50061"]
+CMD ["sh", "-c", "python ml_pipeline/prediction_server.py --model ${MODEL_PATH} --model-dir ${MODEL_DIR_PATH} --host 0.0.0.0 --port 50061"]

@@ -13,12 +13,12 @@ from sklearn.model_selection import train_test_split
 
 from common import FEATURE_COLUMNS, FeatureConfig, attach_direction_label, build_features, load_ticks
 
-MODEL_TYPES = ("xgboost", "lstm", "cnn", "transformer")
-SEQUENCE_MODEL_TYPES = ("lstm", "cnn", "transformer")
+MODEL_TYPES = ("xgboost", "lstm", "cnn")
+SEQUENCE_MODEL_TYPES = ("lstm", "cnn")
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Train XGBoost/LSTM/CNN/Transformer price-return models")
+    p = argparse.ArgumentParser(description="Train XGBoost/LSTM/CNN price-return models")
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--csv", help="Input raw ticks CSV")
     src.add_argument("--dataset-csv", help="Input labeled dataset CSV")
@@ -26,8 +26,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-out-dir", help="Output directory when training multiple models")
     p.add_argument(
         "--model-types",
-        default="xgboost,lstm,cnn,transformer",
-        help="Comma-separated models to train: xgboost,lstm,cnn,transformer",
+        default="xgboost,lstm,cnn",
+        help="Comma-separated models to train: xgboost,lstm,cnn",
     )
     p.add_argument("--horizon-sec", type=int, default=30, help="Prediction horizon in seconds")
     p.add_argument("--label-eps", type=float, default=0.0001, help="Kept for dataset compatibility")
@@ -37,9 +37,27 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--epochs", type=int, default=12, help="Training epochs per model")
     p.add_argument("--batch-size", type=int, default=128, help="Batch size")
     p.add_argument("--hidden-size", type=int, default=64, help="Hidden/channel size")
-    p.add_argument("--num-layers", type=int, default=2, help="LSTM/CNN/Transformer layer count")
+    p.add_argument("--num-layers", type=int, default=2, help="LSTM/CNN layer count")
     p.add_argument("--dropout", type=float, default=0.1, help="Dropout probability")
     p.add_argument("--learning-rate", type=float, default=0.001, help="AdamW learning rate")
+    p.add_argument(
+        "--device",
+        choices=["auto", "cpu", "cuda", "mps"],
+        default="auto",
+        help="Torch device for sequence models",
+    )
+    p.add_argument(
+        "--early-stop-patience",
+        type=int,
+        default=3,
+        help="Stop sequence training if validation loss does not improve for N epochs (0 disables)",
+    )
+    p.add_argument(
+        "--early-stop-min-delta",
+        type=float,
+        default=1e-6,
+        help="Minimum validation loss improvement to reset patience",
+    )
     p.add_argument(
         "--metrics-out-csv",
         help="Optional output CSV path for per-model training metrics",
@@ -285,6 +303,24 @@ def _train_one_model(
     from lstm_model import build_sequence_model
 
     torch.manual_seed(int(args.random_state))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(args.random_state))
+
+    if args.device == "auto":
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
+    else:
+        if args.device == "cuda" and not torch.cuda.is_available():
+            raise ValueError("Requested --device cuda but CUDA is not available")
+        if args.device == "mps" and not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+            raise ValueError("Requested --device mps but MPS is not available")
+        device = torch.device(args.device)
+
+    print(f"{model_type} device={device}", flush=True)
     model = build_sequence_model(
         model_type=model_type,
         input_dim=int(X_train.shape[-1]),
@@ -292,19 +328,33 @@ def _train_one_model(
         num_layers=int(args.num_layers),
         dropout=float(args.dropout),
         nhead=4,
-    )
+    ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.learning_rate), weight_decay=1e-4)
     loss_fn = nn.SmoothL1Loss()
+    train_ds = TensorDataset(torch.from_numpy(X_train), torch.from_numpy(y_train))
+    valid_ds = TensorDataset(torch.from_numpy(X_test), torch.from_numpy(y_test))
     loader = DataLoader(
-        TensorDataset(torch.from_numpy(X_train), torch.from_numpy(y_train)),
+        train_ds,
         batch_size=int(args.batch_size),
         shuffle=True,
     )
+    valid_loader = DataLoader(
+        valid_ds,
+        batch_size=int(args.batch_size),
+        shuffle=False,
+    )
 
-    model.train()
+    best_val = float("inf")
+    best_state = None
+    patience = max(0, int(args.early_stop_patience))
+    no_improve_epochs = 0
+
     for epoch in range(1, int(args.epochs) + 1):
+        model.train()
         losses: list[float] = []
         for xb, yb in loader:
+            xb = xb.to(device=device, dtype=torch.float32, non_blocking=True)
+            yb = yb.to(device=device, dtype=torch.float32, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
             pred = model(xb)
             loss = loss_fn(pred, yb)
@@ -312,12 +362,43 @@ def _train_one_model(
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             losses.append(float(loss.item()))
-        if epoch == 1 or epoch == int(args.epochs) or epoch % 5 == 0:
-            print(f"{model_type} epoch={epoch} train_loss={np.mean(losses):.8f}")
+
+        model.eval()
+        val_losses: list[float] = []
+        with torch.no_grad():
+            for xb, yb in valid_loader:
+                xb = xb.to(device=device, dtype=torch.float32, non_blocking=True)
+                yb = yb.to(device=device, dtype=torch.float32, non_blocking=True)
+                pred = model(xb)
+                val_losses.append(float(loss_fn(pred, yb).item()))
+
+        train_loss = float(np.mean(losses)) if losses else float("nan")
+        val_loss = float(np.mean(val_losses)) if val_losses else float("nan")
+        print(
+            f"{model_type} epoch={epoch}/{int(args.epochs)} train_loss={train_loss:.8f} val_loss={val_loss:.8f}",
+            flush=True,
+        )
+
+        improve = best_val - val_loss
+        if np.isfinite(val_loss) and improve > float(args.early_stop_min_delta):
+            best_val = val_loss
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            no_improve_epochs = 0
+        else:
+            no_improve_epochs += 1
+            if patience > 0 and no_improve_epochs >= patience:
+                print(
+                    f"{model_type} early stopping at epoch={epoch} (best_val={best_val:.8f})",
+                    flush=True,
+                )
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
     model.eval()
     with torch.no_grad():
-        pred = model(torch.from_numpy(X_test)).numpy()
+        pred = model(torch.from_numpy(X_test).to(device=device, dtype=torch.float32)).detach().cpu().numpy()
     metrics = _metrics(y_test, pred)
     metrics.update({"train_rows": int(len(X_train)), "test_rows": int(len(X_test))})
     return model, metrics
@@ -339,6 +420,10 @@ def main() -> None:
     min_rows = max(int(args.min_rows), int(args.seq_len) + 2)
     if len(ds) < min_rows:
         raise ValueError(f"Need at least {min_rows} rows, got {len(ds)}")
+    print(
+        f"Loaded rows={len(ds)} task={task} models={','.join(model_types)} seq_len={int(args.seq_len)} epochs={int(args.epochs)}",
+        flush=True,
+    )
 
     label_meta = _extract_label_metadata(ds, default_eps=float(args.label_eps))
 
@@ -353,6 +438,7 @@ def main() -> None:
     sequence_cache: tuple[np.ndarray, np.ndarray, dict[str, float]] | None = None
     trained_runs: list[dict[str, Any]] = []
     for model_type in model_types:
+        print(f"Training model={model_type}...", flush=True)
         out = _resolve_output_path(args, model_type, len(model_types))
         out.parent.mkdir(parents=True, exist_ok=True)
 

@@ -7,7 +7,7 @@ services:
     image: okx-trading/inference-python:local
     container_name: inference-python
     environment:
-      MODEL_PATH: ${MODEL_PATH:-/app/models/pulse_lstm_v1.pt}
+      MODEL_PATH: ${MODEL_PATH:-/app/models/pulse_xgboost_v1.joblib}
       MODEL_DIR_PATH: ${MODEL_DIR_PATH:-/app/models}
     volumes:
       - ../../models:/app/models:ro
@@ -17,7 +17,7 @@ services:
       - runtime
     restart: unless-stopped
 
-  # C++ runtime backend: OKX WS -> parse trades/books5 -> rolling features -> gRPC stream.
+  # C++ runtime backend: OKX WS -> parse trades/books -> rolling features -> gRPC stream.
   backend-cpp:
     build:
       context: ../../
@@ -64,37 +64,12 @@ services:
       - "--csv-out"
       - "/data/books_trades_btcusdt"
       - "--duration-sec"
-      - "${COLLECT_DURATION_SEC:-10800}"
+      - "${COLLECT_DURATION_SEC:-600}"
+      - "--trace-stream"
     volumes:
       - ../../data:/data
     profiles:
       - training
-
-  # Python training step: builds feature rows from the C++ collector CSV export.
-  feature-builder:
-    build:
-      context: ../../
-      dockerfile: deploy/containers/Dockerfile.inference-python
-    image: okx-trading/inference-python:local
-    container_name: feature-builder
-    command:
-      - "python"
-      - "ml_pipeline/build_realtime_features.py"
-      - "--csv"
-      - "${RAW_TICKS_CSV:-/app/data/books_trades_btcusdt.csv}"
-      - "--symbol"
-      - "${TRAIN_SYMBOL:-BTC-USDT}"
-      - "--channels"
-      - "${TRAIN_CHANNELS:-trades,books5}"
-      - "--out-csv"
-      - "${FEATURES_CSV:-/app/data/features_btcusdt.csv}"
-    volumes:
-      - ../../data:/app/data
-    profiles:
-      - training
-    depends_on:
-      backend-cpp-collector:
-        condition: service_completed_successfully
 
   # Python training step: creates future labels from feature rows.
   label-maker:
@@ -124,9 +99,9 @@ services:
       - ../../data:/app/data
     profiles:
       - training
-    depends_on:
-      backend-cpp-collector:
-        condition: service_completed_successfully
+    # depends_on:
+    #   backend-cpp-collector:
+    #     condition: service_completed_successfully
 
   # Python training step: trains/evaluates model artifacts for runtime inference.
   model-trainer:
@@ -147,7 +122,7 @@ services:
       - "--label-eps"
       - "${LABEL_EPS:-0.0001}"
       - "--model-types"
-      - "${TRAIN_MODEL_TYPES:-lstm,cnn,transformer,xgboost}"
+      - "${TRAIN_MODEL_TYPES:-xgboost,lstm,cnn}"
       - "--task"
       - "${TRAIN_TASK:-regression}"
       - "--metrics-out-csv"
@@ -161,6 +136,6 @@ services:
       - ../../models:/app/models
     profiles:
       - training
-    depends_on:
-      label-maker:
-        condition: service_completed_successfully
+    # depends_on:
+    #   label-maker:
+    #     condition: service_completed_successfully

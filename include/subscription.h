@@ -11,7 +11,7 @@ struct Subscription
     std::map<std::string, std::string> args;
 };
 
-std::string build_subscribe_message_json(const std::vector<Subscription>& subs);
+std::string build_subscribe_message_json(const Subscription& sub);
 std::string subscription_key(const Subscription& sub);
 
 class RuntimeSubscriptionRegistry

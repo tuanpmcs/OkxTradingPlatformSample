@@ -6,6 +6,7 @@
 
 namespace
 {
+constexpr std::size_t kCsvFlushEveryRows = 256;
 
 std::string decimal_to_string(const double_type& value)
 {
@@ -89,7 +90,8 @@ MarketEventDispatcher::MarketEventDispatcher(MarketEventListener& listener)
 bool MarketEventDispatcher::dispatch(const std::string& payload)
 {
     Parser parser(payload);
-    const auto arg = parser.parse_arg();
+    auto arg = parser.parse_arg();
+
     if (!arg)
     {
         return false;
@@ -97,8 +99,7 @@ bool MarketEventDispatcher::dispatch(const std::string& payload)
 
     if (arg->channel == Channel::TRADES)
     {
-        Parser trades_parser(payload);
-        const auto trades = trades_parser.parse_trades();
+        const auto trades = parser.parse_trades();
         if (!trades || trades->empty())
         {
             return false;
@@ -106,11 +107,9 @@ bool MarketEventDispatcher::dispatch(const std::string& payload)
         _listener.on_trades(*trades, payload);
         return true;
     }
-
-    if (arg->channel == Channel::BOOKS5)
+    else if (arg->channel == Channel::BOOKS5)
     {
-        Parser books5_parser(payload);
-        const auto books5 = books5_parser.parse_books5();
+        const auto books5 = parser.parse_books5();
         if (!books5)
         {
             return false;
@@ -118,11 +117,9 @@ bool MarketEventDispatcher::dispatch(const std::string& payload)
         _listener.on_books5(*books5, payload);
         return true;
     }
-
-    if (arg->channel == Channel::BOOKS)
+    else if (arg->channel == Channel::BOOKS)
     {
-        Parser books_parser(payload);
-        const auto books = books_parser.parse_books();
+        const auto books = parser.parse_books();
         if (!books)
         {
             return false;
@@ -170,7 +167,11 @@ void CsvTickWriter::write(const StreamRecord& tick)
          << csv_escape(getv("trade_volume")) << ','
          << csv_escape(getv("trade_imbalance")) << ','
          << csv_escape(tick.source) << '\n';
-    _out.flush();
+    ++_rows_since_flush;
+    if ((_rows_since_flush % kCsvFlushEveryRows) == 0)
+    {
+        _out.flush();
+    }
 }
 
 std::string CsvTickWriter::infer_event_type(const std::string& channel)

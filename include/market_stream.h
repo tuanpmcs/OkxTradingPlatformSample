@@ -3,6 +3,7 @@
 #include "types.h"
 
 #include <cstdint>
+#include <cstddef>
 #include <deque>
 #include <fstream>
 #include <map>
@@ -61,6 +62,7 @@ private:
 
 private:
 	std::ofstream _out;
+	std::size_t   _rows_since_flush{0};
 };
 
 class FeatureAccumulator

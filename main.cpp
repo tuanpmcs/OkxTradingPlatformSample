@@ -5,6 +5,7 @@
 #include "runtime_stream_handler.h"
 #include "subscription.h"
 #include "tls_client.h"
+#include "feature_csv_writer.h"
 
 #include <boost/url.hpp>
 
@@ -30,10 +31,9 @@ extern "C" void handle_stop_signal(int)
 int main(int argc, char* argv[])
 {
 	bool		   bench_main_mode = false;
+	bool		   trace_stream = false;
 	unsigned short grpc_port = 50051;
 	bool		   grpc_enabled = true;
-	std::string	   override_symbol;
-	std::string	   override_channel;
 	std::string	   csv_out_path;
 	int			   duration_sec = 0;
 	for (int i = 1; i < argc; ++i)
@@ -42,6 +42,10 @@ int main(int argc, char* argv[])
 		if (arg == "--bench-main")
 		{
 			bench_main_mode = true;
+		}
+		else if (arg == "--trace-stream")
+		{
+			trace_stream = true;
 		}
 		else if (arg == "--grpc-port" && i + 1 < argc)
 		{
@@ -63,14 +67,6 @@ int main(int argc, char* argv[])
 		else if (arg == "--disable-grpc")
 		{
 			grpc_enabled = false;
-		}
-		else if (arg == "--symbol" && i + 1 < argc)
-		{
-			override_symbol = argv[++i];
-		}
-		else if (arg == "--channel" && i + 1 < argc)
-		{
-			override_channel = argv[++i];
 		}
 		else if (arg == "--csv-out" && i + 1 < argc)
 		{
@@ -135,8 +131,6 @@ websocket_endpoint:
         ws_url: "wss://ws.okx.com:8443/ws/v5/public"
         subscriptions:
             - instId: "BTC-USDT"
-              channel: "books5"
-            - instId: "BTC-USDT"
               channel: "trades"
             - instId: "BTC-USDT"
               channel: "books"
@@ -158,22 +152,6 @@ websocket_endpoint:
 	}
 
 	auto okx_config = from(config);
-	if (!override_symbol.empty() || !override_channel.empty())
-	{
-		if (!okx_config.websocket_endpoint.public_endpoint)
-		{
-			LOG_STREAM_ERROR("Cannot apply --symbol/--channel because public endpoint is missing.");
-			return 1;
-		}
-
-		Subscription sub;
-		sub.args["instId"] = override_symbol.empty() ? "BTC-USDT" : override_symbol;
-		sub.args["channel"] = override_channel.empty() ? "books5" : override_channel;
-		okx_config.websocket_endpoint.public_endpoint->subscriptions = {sub};
-
-		LOG_STREAM_INFO("Override subscription: channel=" << sub.args["channel"]
-														  << ", instId=" << sub.args["instId"]);
-	}
 
 	if (!okx_config.websocket_endpoint.public_endpoint)
 	{
@@ -204,33 +182,12 @@ websocket_endpoint:
 		return 1;
 	}
 
-	const std::string subscribe_msg = build_subscribe_message_json(subs);
-
-	if (bench_main_mode)
-	{
-		(void)subscribe_msg;
-		return 0;
-	}
-
 	RuntimeSubscriptionRegistry		   runtime_subscriptions;
 	runtime_subscriptions.mark_existing(subs);
 	GrpcTickHub						   grpc_hub;
 	MarketDataServiceImpl			   grpc_service(grpc_hub, &runtime_subscriptions);
 	std::unique_ptr<GrpcServerRuntime> grpc_server;
-	std::unique_ptr<CsvTickWriter>	   csv_writer;
-	if (!csv_out_path.empty())
-	{
-		try
-		{
-			csv_writer = std::make_unique<CsvTickWriter>(csv_out_path);
-			LOG_STREAM_INFO("CSV export enabled: " << csv_out_path);
-		}
-		catch (const std::exception& e)
-		{
-			LOG_STREAM_ERROR("Failed to initialize CSV writer: " << e.what());
-			return 1;
-		}
-	}
+
 	if (grpc_enabled)
 	{
 		try
@@ -261,14 +218,17 @@ websocket_endpoint:
 		return 1;
 	}
 
-	auto write_result = tls_client.write(subscribe_msg, okx_config.network.reconnect_ms);
-	if (!write_result.ok())
+	for (const auto& sub : subs)
 	{
-		LOG_STREAM_ERROR("Failed to send subscribe message: " << write_result.message);
-		return 1;
+		std::string sub_msg = build_subscribe_message_json(sub);
+		LOG_STREAM_INFO("Sending subscribe message: " << sub_msg);
+		auto write_result = tls_client.write(sub_msg, okx_config.network.reconnect_ms);
+		if (!write_result.ok())
+		{
+			LOG_STREAM_ERROR("Failed to send subscribe message: " << write_result.message);
+			return 1;
+		}
 	}
-
-	LOG_STREAM_INFO("Subscribed. Streaming messages...");
 
 	const auto flush_runtime_subscriptions = [&]() -> bool {
 		auto pending = runtime_subscriptions.take_pending();
@@ -277,14 +237,18 @@ websocket_endpoint:
 			return true;
 		}
 
-		const auto runtime_subscribe_msg = build_subscribe_message_json(pending);
-		auto	   runtime_write_result = tls_client.write(runtime_subscribe_msg, okx_config.network.reconnect_ms);
-		if (!runtime_write_result.ok())
+		for (const auto& pending_sub : pending)
 		{
-			LOG_STREAM_ERROR("Failed to send runtime subscribe message: " << runtime_write_result.message);
-			return false;
+			const auto runtime_subscribe_msg = build_subscribe_message_json(pending_sub);
+			auto	   runtime_write_result = tls_client.write(runtime_subscribe_msg, okx_config.network.reconnect_ms);
+			if (!runtime_write_result.ok())
+			{
+				LOG_STREAM_ERROR("Failed to send runtime subscribe message: " << runtime_write_result.message);
+				return false;
+			}
+			LOG_STREAM_INFO("Runtime subscription update: " << runtime_subscribe_msg);
 		}
-		LOG_STREAM_INFO("Runtime subscription update: " << runtime_subscribe_msg);
+		
 		return true;
 	};
 
@@ -299,8 +263,19 @@ websocket_endpoint:
 	std::optional<double>			   last_price;
 	std::map<std::string, std::string> previous_fields;
 	const std::string feature_csv_out_path = csv_out_path.empty() ? "" : (csv_out_path + ".features.csv");
-	RuntimeStreamHandler runtime_handler(last_price, previous_fields, csv_writer, grpc_server, grpc_hub, feature_csv_out_path);
-	MarketEventDispatcher			   event_dispatcher(runtime_handler);
+	std::unique_ptr<trading::FeatureCsvWriter> feature_csv_writer;
+	if (!feature_csv_out_path.empty())
+	{
+		LOG_STREAM_INFO("Feature CSV output enabled: " << feature_csv_out_path);
+		feature_csv_writer = std::make_unique<trading::FeatureCsvWriter>(feature_csv_out_path);
+	}
+	RuntimeStreamHandler runtime_handler(
+		last_price,
+		previous_fields,
+		grpc_server,
+		feature_csv_writer,
+		grpc_hub);
+	MarketEventDispatcher event_dispatcher(runtime_handler);
 
 	while (tls_client.is_open() && !g_should_stop.load())
 	{
@@ -338,13 +313,13 @@ websocket_endpoint:
 			return 1;
 		}
 
-		LOG_STREAM_INFO("Stream: " << response);
-
-		if (grpc_server || csv_writer)
+		if (trace_stream)
 		{
+			LOG_STREAM_INFO("Stream: " << response);
+		}
+
 			(void)event_dispatcher.dispatch(response);
 		}
-	}
 
 	if (g_should_stop.load())
 	{

@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--target", default="127.0.0.1:50051", help="MarketData gRPC target")
     p.add_argument("--symbol", default="BTC-USDT", help="Symbol")
     p.add_argument("--trade-channel", default="trades", help="Trade channel")
-    p.add_argument("--book-channel", default="books5", help="Order book channel")
+    p.add_argument("--book-channel", default="books", help="Order book channel")
     p.add_argument("--duration-sec", type=int, default=300, help="Collect duration in seconds")
     p.add_argument("--out-csv", required=True, help="Output CSV path")
     return p.parse_args()

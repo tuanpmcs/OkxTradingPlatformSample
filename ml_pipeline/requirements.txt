@@ -5,3 +5,6 @@ grpcio>=1.62
 grpcio-tools>=1.62
 torch>=2.2
 xgboost>=2.0
+lightgbm>=4.3
+catboost>=1.2
+matplotlib>=3.7

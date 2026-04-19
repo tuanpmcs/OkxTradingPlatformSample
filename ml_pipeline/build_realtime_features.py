@@ -40,13 +40,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--symbol", default="", help="Optional instId filter")
     p.add_argument(
         "--channels",
-        default="trades,books5",
-        help="Optional comma-separated channel filter, e.g. trades,books5",
+        default="trades,books",
+        help="Optional comma-separated channel filter, e.g. trades,books",
     )
     p.add_argument(
         "--book-channel",
-        default="books5",
-        help="Order-book channel used for feature row sampling. Default: books5",
+        default="books",
+        help="Order-book channel used for feature row sampling. Default: books",
     )
     p.add_argument(
         "--trade-channel",
@@ -114,7 +114,7 @@ def run() -> None:
     feat = build_realtime_features(df, cfg).sort_values("ts").reset_index(drop=True)
     if feat.empty:
         raise ValueError(
-            "No feature rows were produced. Verify books5 updates exist and symbol/channel filters match input CSV."
+            "No feature rows were produced. Verify books updates exist and symbol/channel filters match input CSV."
         )
     _check_stop()
     out.parent.mkdir(parents=True, exist_ok=True)

@@ -45,34 +45,25 @@ std::string json_escape(std::string_view input)
 
 }  // namespace
 
-std::string build_subscribe_message_json(const std::vector<Subscription>& subs)
+std::string build_subscribe_message_json(const Subscription& sub)
 {
-	std::string message = R"({"op":"subscribe","args":[)";
-	for (size_t i = 0; i < subs.size(); ++i)
+	std::string out = R"({"op":"subscribe","args":[{)";
+	bool first = true;
+	for (const auto& [key, value] : sub.args)
 	{
-		if (i > 0)
+		if (!first)
 		{
-			message += ",";
+			out += ',';
 		}
-		message += "{";
-		size_t field_index = 0;
-		for (const auto& [key, value] : subs[i].args)
-		{
-			if (field_index > 0)
-			{
-				message += ",";
-			}
-			message += "\"";
-			message += json_escape(key);
-			message += "\":\"";
-			message += json_escape(value);
-			message += "\"";
-			++field_index;
-		}
-		message += "}";
+		first = false;
+		out += '"';
+		out += json_escape(key);
+		out += R"(":")";
+		out += json_escape(value);
+		out += '"';
 	}
-	message += "]}";
-	return message;
+	out += "}]}";
+	return out;
 }
 
 std::string subscription_key(const Subscription& sub)

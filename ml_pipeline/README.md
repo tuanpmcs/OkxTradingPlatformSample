@@ -92,6 +92,17 @@ python collect_ticks_from_grpc.py \
   --out-csv ../data/books_trades_btcusdt.csv
 ```
 
+Or if you already have OKX export files (`...trades....csv` + `...L2orderbook....data`), convert them first:
+
+```bash
+python convert_okx_raw_to_ticks.py \
+  --trades-csv ../data/BTC-USDT-trades-2026-04-15.csv \
+  --l2-data ../data/BTC-USDT-L2orderbook-400lv-2026-04-16.data \
+  --symbol BTC-USDT \
+  --book-sample-ms 10 \
+  --out-csv ../data/books_trades_btcusdt.csv
+```
+
 ## 3) Build realtime features
 
 ```bash
@@ -130,6 +141,36 @@ For notebook-based evaluation, open:
 It trains XGBoost, CNN, LSTM, and Transformer on the same split, saves model artifacts, and writes:
 
 `../data/model_comparison_metrics.csv`
+
+### CPU model zoo (tree + sequence + linear + hybrid)
+
+```bash
+python train_cpu_model_zoo.py \
+  --dataset-csv ../data/train_dataset_btcusdt_h30.csv \
+  --out-dir ../models/cpu_zoo \
+  --metrics-out-csv ../data/cpu_zoo_metrics.csv \
+  --pred-out-csv ../data/cpu_zoo_predictions.csv \
+  --model-types xgboost,lightgbm,catboost,lstm,cnn,transformer_lite,ridge,sgd_regressor,hybrid_gate \
+  --task regression \
+  --epochs 5 \
+  --max-seq-samples 120000
+```
+
+`lightgbm` and `catboost` are optional. If missing, the script auto-skips them.
+
+### Evaluate profitability (after fees/slippage)
+
+```bash
+python evaluate_strategy.py \
+  --csv ../data/cpu_zoo_predictions.csv \
+  --pred-col pred_xgboost \
+  --price-col price \
+  --target-price-col target_price \
+  --entry-threshold 0.00005 \
+  --fee-bps-per-side 1.0 \
+  --slippage-bps-per-side 0.5 \
+  --out-csv ../data/pnl_eval_xgboost.csv
+```
 
 ## 6) Run inference server
 

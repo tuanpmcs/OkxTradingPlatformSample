@@ -93,7 +93,8 @@ class TransformerRegressor(nn.Module):
             dropout=dropout,
             activation="gelu",
             batch_first=True,
-            norm_first=True,
+            # Keep post-norm to allow nested tensor optimization on newer PyTorch.
+            norm_first=False,
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=max(1, num_layers))
         self.head = nn.Sequential(

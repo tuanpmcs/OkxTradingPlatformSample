@@ -21,16 +21,16 @@ public:
 	{
 		std::mutex				mutex;
 		std::condition_variable cv;
-		std::deque<StreamRecord> queue;
+		std::deque<std::shared_ptr<const StreamRecord>> queue;
 		bool					closed{false};
 
-		bool wait_pop(StreamRecord& event, std::chrono::milliseconds timeout);
+		bool wait_pop(std::shared_ptr<const StreamRecord>& event, std::chrono::milliseconds timeout);
 	};
 
 public:
 	std::shared_ptr<Subscriber> add_subscriber();
 	void remove_subscriber(const std::shared_ptr<Subscriber>& target);
-	void broadcast(const StreamRecord& event);
+	void broadcast(StreamRecord&& event);
 	void shutdown();
 
 private:

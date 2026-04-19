@@ -29,6 +29,7 @@ COPY proto ./proto
 # Using unique id for TARGETARCH prevents cache corruption between arm64/amd64.
 # Keep dependency builds single-threaded in Docker to avoid grpc/vcpkg OOM fallbacks.
 RUN --mount=type=cache,target=/usr/local/vcpkg/downloads \
+    --mount=type=cache,id=cmake-build-${TARGETARCH},target=/app/build \
     --mount=type=cache,id=vcpkg-archives-${TARGETARCH},target=/root/.cache/vcpkg/archives \
     case "${TARGETARCH}" in \
         arm64) CONFIG_PRESET="arm64-linux-dynamic-rel" ;; \
@@ -38,7 +39,8 @@ RUN --mount=type=cache,target=/usr/local/vcpkg/downloads \
     && VCPKG_MAX_CONCURRENCY="${VCPKG_MAX_CONCURRENCY}" CMAKE_BUILD_PARALLEL_LEVEL=1 cmake --preset "${CONFIG_PRESET}"
 
 # 4. Build
-RUN --mount=type=cache,id=vcpkg-archives-${TARGETARCH},target=/root/.cache/vcpkg/archives \
+RUN --mount=type=cache,id=cmake-build-${TARGETARCH},target=/app/build \
+    --mount=type=cache,id=vcpkg-archives-${TARGETARCH},target=/root/.cache/vcpkg/archives \
     case "${TARGETARCH}" in \
         arm64) BUILD_PRESET="arm64-linux-dynamic-rel"; BUILD_DIR="/app/build/arm64-linux-dynamic/release"; VCPKG_TRIPLET="arm64-linux-dynamic" ;; \
         amd64|x64) BUILD_PRESET="x64-linux-dynamic-rel"; BUILD_DIR="/app/build/x64-linux-dynamic/release"; VCPKG_TRIPLET="x64-linux-dynamic" ;; \
@@ -76,4 +78,4 @@ RUN echo "/opt/app/lib" > /etc/ld.so.conf.d/opt-app.conf && ldconfig
 
 EXPOSE 50051
 ENTRYPOINT ["/opt/app/bin/hello_world"]
-CMD ["--grpc-port", "50051"]
+CMD ["--grpc-port", "50051", "--trace-stream"]

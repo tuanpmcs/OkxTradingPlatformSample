@@ -4,7 +4,7 @@
 #include <stdexcept>
 #include <string>
 
-bool GrpcTickHub::Subscriber::wait_pop(StreamRecord& event, std::chrono::milliseconds timeout)
+bool GrpcTickHub::Subscriber::wait_pop(std::shared_ptr<const StreamRecord>& event, std::chrono::milliseconds timeout)
 {
 	std::unique_lock<std::mutex> lock(mutex);
 	cv.wait_for(lock, timeout, [this]() {
@@ -16,7 +16,7 @@ bool GrpcTickHub::Subscriber::wait_pop(StreamRecord& event, std::chrono::millise
 		return false;
 	}
 
-	event = std::move(queue.front());
+	event = queue.front();
 	queue.pop_front();
 	return true;
 }
@@ -37,8 +37,10 @@ void GrpcTickHub::remove_subscriber(const std::shared_ptr<Subscriber>& target)
 			_subscribers.end());
 }
 
-void GrpcTickHub::broadcast(const StreamRecord& event)
+void GrpcTickHub::broadcast(StreamRecord&& event)
 {
+	auto shared_event = std::make_shared<const StreamRecord>(std::move(event));
+
 	std::vector<std::shared_ptr<Subscriber>> snapshot;
 	{
 		std::lock_guard<std::mutex> lock(_mutex);
@@ -49,7 +51,7 @@ void GrpcTickHub::broadcast(const StreamRecord& event)
 	{
 		{
 			std::lock_guard<std::mutex> lock(subscriber->mutex);
-			subscriber->queue.push_back(event);
+			subscriber->queue.push_back(shared_event);
 			if (subscriber->queue.size() > 1024)
 			{
 				subscriber->queue.pop_front();
@@ -99,32 +101,31 @@ grpc::Status MarketDataServiceImpl::Subscribe(grpc::ServerContext* context,
 
 	while (!context->IsCancelled())
 	{
-		StreamRecord event;
+		std::shared_ptr<const StreamRecord> event;
 		if (!subscriber->wait_pop(event, std::chrono::milliseconds(250))) continue;
 
 		if (!requested_channel.empty())
 		{
-			const auto it = event.fields.find("channel");
-			if (it == event.fields.end() || it->second != requested_channel) continue;
+			const auto it = event->fields.find("channel");
+			if (it == event->fields.end() || it->second != requested_channel) continue;
 		}
 
 		if (!requested_symbol.empty())
 		{
-			const auto it = event.fields.find("instId");
-			if (it == event.fields.end() || it->second != requested_symbol) continue;
+			const auto it = event->fields.find("instId");
+			if (it == event->fields.end() || it->second != requested_symbol) continue;
 		}
 
 		marketstream::Tick tick;
-		tick.set_ts(event.ts_ms);
-		tick.set_price(event.price);
-		tick.set_change(event.change);
-		tick.set_source(event.source);
-		tick.set_raw_json(event.raw_json);
-		for (const auto& [k, v] : event.fields)
+		tick.set_ts(event->ts_ms);
+		tick.set_price(event->price);
+		tick.set_change(event->change);
+		tick.set_source(event->source);
+		for (const auto& [k, v] : event->fields)
 		{
 			(*tick.mutable_fields())[k] = v;
 		}
-		for (const auto& field_name : event.changed_fields)
+		for (const auto& field_name : event->changed_fields)
 		{
 			tick.add_changed_fields(field_name);
 		}

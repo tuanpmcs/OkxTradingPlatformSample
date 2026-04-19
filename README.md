@@ -15,12 +15,9 @@ An end-to-end sample trading stack for:
 - `web-gateway`: Node/Express HTTP gateway (`/health`, `/predict`)
 - `desktop/`: Electron UI for stream + prediction workflows
 
-## Architecture
+## Data Flow
 
-![Architecture](docs/architecture.drawio.svg)
-
-- Diagram source: [docs/architecture.drawio](docs/architecture.drawio)
-- Rendered diagram: [docs/architecture.drawio.svg](docs/architecture.drawio.svg)
+![](docs/flowchart.drawio.svg)
 - Proto contract: [proto/market_data.proto](proto/market_data.proto)
 
 ## Kiến Trúc Ngắn Gọn
