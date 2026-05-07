@@ -18,7 +18,7 @@ RuntimeStreamHandler::RuntimeStreamHandler(std::optional<double>& last_price,
 	, _inference_cfg(std::move(inference_cfg))
 	, _grpc_hub(grpc_hub)
 	, _features(5000)
-	, _feature_builder(trading::FeatureBuilder::Config{100, true})
+	, _feature_builder(trading::FeatureBuilder::Config{1000, true})
 {
 }
 
@@ -37,13 +37,10 @@ void RuntimeStreamHandler::on_trades(const Trades& trades, const std::string& ra
 
 void RuntimeStreamHandler::on_books5(const Books5& books5, const std::string& raw_json)
 {
-	if (_feature_csv_writer)
+	const auto feature = _feature_builder.on_books(books5);
+	if (_feature_csv_writer && feature)
 	{
-		const auto feature = _feature_builder.on_books(books5);
-		if (feature)
-		{
-			_feature_csv_writer->write(*feature);
-		}
+		_feature_csv_writer->write(*feature);
 	}
 
 	_features.observe_books5(books5);
@@ -53,6 +50,7 @@ void RuntimeStreamHandler::on_books5(const Books5& books5, const std::string& ra
 	books.instrument_id = books5.instrument_id;
 	books.exchange_ts_ms = books5.exchange_ts_ms;
 	books.sequence_id = books5.sequence_id;
+	books.action = books5.action.empty() ? "snapshot" : books5.action;
 	books.bids.push_back(books5.bids[0]);
 	books.asks.push_back(books5.asks[0]);
 
@@ -64,19 +62,17 @@ void RuntimeStreamHandler::on_books5(const Books5& books5, const std::string& ra
 					  books5.bids[0].price.convert_to<double>(),
 					  books5.asks[0].price.convert_to<double>(),
 					  books5.bids[0].quantity.convert_to<double>(),
-					  books5.asks[0].quantity.convert_to<double>());
+					  books5.asks[0].quantity.convert_to<double>(),
+					  feature ? &*feature : nullptr);
 	emit(std::move(record));
 }
 
 void RuntimeStreamHandler::on_books(const Books& books, const std::string& raw_json)
 {
-	if (_feature_csv_writer)
+	const auto feature = _feature_builder.on_books(books);
+	if (_feature_csv_writer && feature)
 	{
-		const auto feature = _feature_builder.on_books(books);
-		if (feature)
-		{
-			_feature_csv_writer->write(*feature);
-		}
+		_feature_csv_writer->write(*feature);
 	}
 
 	_features.observe_books(books);
@@ -91,7 +87,8 @@ void RuntimeStreamHandler::on_books(const Books& books, const std::string& raw_j
 						  books.bids[0].price.convert_to<double>(),
 						  books.asks[0].price.convert_to<double>(),
 						  books.bids[0].quantity.convert_to<double>(),
-						  books.asks[0].quantity.convert_to<double>());
+						  books.asks[0].quantity.convert_to<double>(),
+						  feature ? &*feature : nullptr);
 	}
 	emit(std::move(record));
 }
@@ -115,9 +112,11 @@ void RuntimeStreamHandler::attach_prediction(StreamRecord&	   record,
 											 double				bid_px,
 											 double				ask_px,
 											 double				bid_sz,
-											 double				ask_sz)
+											 double				ask_sz,
+											 const trading::FeatureRow* feature_row)
 {
-	if (!_prediction_client || _inference_cfg.mode == InferenceMode::Off)
+	if (!_prediction_client || _inference_cfg.mode == InferenceMode::Off
+		|| !_inference_cfg.stream_predictions_enabled)
 	{
 		return;
 	}
@@ -135,6 +134,29 @@ void RuntimeStreamHandler::attach_prediction(StreamRecord&	   record,
 		mid_px = 0.5 * (bid_px + ask_px);
 	}
 	point.set_price(mid_px);
+	if (feature_row)
+	{
+		point.set_mid_price(feature_row->mid_price);
+		point.set_spread(feature_row->spread);
+		point.set_rel_spread(feature_row->rel_spread);
+		point.set_microprice(feature_row->microprice);
+		point.set_imbalance(feature_row->imbalance_l5);
+		point.set_imbalance_l1(feature_row->imbalance_l1);
+		point.set_imbalance_l5(feature_row->imbalance_l5);
+		point.set_bid_vol_l5(feature_row->bid_vol_l5);
+		point.set_ask_vol_l5(feature_row->ask_vol_l5);
+		point.set_weighted_bid_depth(feature_row->weighted_bid_depth);
+		point.set_weighted_ask_depth(feature_row->weighted_ask_depth);
+		point.set_trade_count(static_cast<double>(feature_row->trade_count));
+		point.set_trade_volume(feature_row->trade_volume);
+		point.set_trade_imbalance(feature_row->trade_imbalance);
+		point.set_trade_vwap_dev_from_mid(feature_row->trade_vwap_dev_from_mid);
+		point.set_delta_mid_price(feature_row->delta_mid_price);
+		point.set_delta_spread(feature_row->delta_spread);
+		point.set_delta_imbalance_l5(feature_row->delta_imbalance_l5);
+		point.set_is_snapshot(feature_row->book_action == "snapshot" ? 1.0 : 0.0);
+		point.set_is_update(feature_row->book_action == "update" ? 1.0 : 0.0);
+	}
 
 	_inference_points.push_back(point);
 	if (_inference_points.size() > _inference_cfg.max_points)

@@ -184,6 +184,18 @@ select:focus {
   flex-wrap: wrap;
 }
 
+.control-hint {
+  margin: -0.2rem 0 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+.control-hint code {
+  font-family: "IBM Plex Mono", monospace;
+  color: var(--text);
+}
+
 .control-actions .btn {
   height: clamp(40px, 5.2vw, 44px);
   min-width: clamp(120px, 18vw, 180px);
@@ -303,6 +315,12 @@ select:focus {
   padding: 0.55rem 0.6rem 0.65rem;
 }
 
+.input-help {
+  color: #83a7ba;
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
 .sim-layout {
   margin-top: 0.75rem;
   display: grid;
@@ -324,6 +342,14 @@ select:focus {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   font-weight: 700;
+}
+
+.sim-block-caption {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.79rem;
+  line-height: 1.45;
+  max-width: 66ch;
 }
 
 .sim-grid-config {
@@ -356,6 +382,59 @@ select:focus {
 
 .sim-grid > button {
   min-height: 42px;
+}
+
+.sim-derived-panel {
+  margin-top: 0.85rem;
+  border: 1px solid rgba(148, 199, 229, 0.16);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(10, 25, 39, 0.82), rgba(8, 19, 30, 0.62));
+  padding: 0.72rem;
+}
+
+.sim-derived-head {
+  color: #9fd3f0;
+  font-size: 0.77rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.sim-derived-grid {
+  margin-top: 0.65rem;
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.sim-derived-card {
+  display: grid;
+  gap: 0.28rem;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 199, 229, 0.14);
+  background: rgba(6, 16, 26, 0.72);
+  padding: 0.58rem 0.62rem;
+}
+
+.sim-derived-label {
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.sim-derived-card strong {
+  font-family: "IBM Plex Mono", monospace;
+  color: #eef8ff;
+  font-size: 0.96rem;
+}
+
+.sim-decision-basis {
+  margin: 0.7rem 0 0;
+  color: #bcd8e7;
+  font-size: 0.76rem;
+  line-height: 1.5;
+  font-family: "IBM Plex Mono", monospace;
 }
 
 .sim-summary {
@@ -554,6 +633,10 @@ select:focus {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .sim-derived-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .sim-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -585,6 +668,10 @@ select:focus {
   .sim-grid-config,
   .sim-grid-exec,
   .sim-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .sim-derived-grid {
     grid-template-columns: 1fr;
   }
 

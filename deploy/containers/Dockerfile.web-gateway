@@ -1,8 +1,28 @@
 FROM node:20-slim
 
 WORKDIR /app
+
+ARG HTTP_PROXY=""
+ARG HTTPS_PROXY=""
+ARG ALL_PROXY=""
+ARG NO_PROXY="backend-cpp,inference-python,localhost,127.0.0.1,registry.npmjs.org"
+ARG http_proxy=""
+ARG https_proxy=""
+ARG all_proxy=""
+ARG no_proxy="backend-cpp,inference-python,localhost,127.0.0.1,registry.npmjs.org"
+
+ENV HTTP_PROXY="" \
+    HTTPS_PROXY="" \
+    ALL_PROXY="" \
+    NO_PROXY="backend-cpp,inference-python,localhost,127.0.0.1,registry.npmjs.org" \
+    http_proxy="" \
+    https_proxy="" \
+    all_proxy="" \
+    no_proxy="backend-cpp,inference-python,localhost,127.0.0.1,registry.npmjs.org"
+
 COPY deploy/containers/gateway/package.json ./package.json
-RUN npm install --omit=dev
+COPY deploy/containers/gateway/package-lock.json ./package-lock.json
+RUN npm ci --omit=dev
 
 COPY deploy/containers/gateway/server.js ./server.js
 COPY backend/proto ./proto
@@ -11,4 +31,4 @@ ENV PORT=8080
 ENV PRED_GRPC_TARGET=inference-python:50061
 
 EXPOSE 8080
-CMD ["npm", "start"]
+CMD ["node", "server.js"]

@@ -28,7 +28,7 @@ struct AppConfig
 	std::string channel{"books5"};
 	int			runtime_sec{0};
 	int			report_every{50};
-	int			horizon_sec{30};
+	int			horizon_sec{1};
 	int			inference_timeout_ms{25};
 	std::size_t min_points{32};
 	std::size_t max_points{256};

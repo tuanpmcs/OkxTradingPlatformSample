@@ -5,14 +5,7 @@ This folder provides scripts to run the C++ market stream runtime (`hello_world`
 ## Important integration note
 
 The C++ runtime currently supports model inference via **gRPC** (`--inference-mode grpc`) or local fallback logic.
-SageMaker endpoints are HTTP (`/invocations`).
-
-That means the current deployment split is:
-
-- SageMaker: managed Python model inference endpoint
-- EC2: C++ stream runtime (typically with `--inference-mode off`)
-
-If you later want C++ stream -> SageMaker direct inference, we need to add a SageMaker HTTP prediction client in `backend/src/inference`.
+For AWS deployment, the cleanest path is to pair the stream runtime with a nearby gRPC inference service or run the stream container by itself with `--inference-mode off`.
 
 ## 1) Build and push C++ image to ECR
 

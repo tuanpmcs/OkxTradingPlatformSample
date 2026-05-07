@@ -18,7 +18,8 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 import grpc
 import joblib
 import numpy as np
-from ml_pipeline.features.common import FEATURE_COLUMNS, latest_feature_vector_from_prices
+import pandas as pd
+from ml_pipeline.features.common import FEATURE_COLUMNS, latest_feature_vector_from_price_points, latest_feature_vector_from_prices
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -61,6 +62,10 @@ import market_data_pb2 as pb2  # type: ignore  # noqa: E402
 import market_data_pb2_grpc as pb2_grpc  # type: ignore  # noqa: E402
 
 
+def log_inference(message: str) -> None:
+    print(f"[inference-python] {message}", flush=True)
+
+
 def signal_from_return(pred_ret: float, eps: float) -> str:
     threshold = max(float(eps), 1e-8)
     if pred_ret > threshold:
@@ -92,6 +97,7 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
             self.ret_mean = 0.0
             self.ret_std = 1.0
             self.label_classes = []
+            self.return_calibrator = None
 
             model_path_str = str(model_path)
             if model_path_str.endswith(".joblib") or model_path_str.endswith(".artifact"):
@@ -103,6 +109,7 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
                 self.horizon_sec = int(bundle.get("horizon_sec", 30))
                 self.label_eps = float(bundle.get("label_eps", self.label_eps))
                 self.label_classes = list(bundle.get("label_classes", []))
+                self.return_calibrator = bundle.get("return_calibrator")
             elif model_path_str.endswith(".pt"):
                 import torch
                 from ml_pipeline.models.lstm_model import build_sequence_model
@@ -141,7 +148,7 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
                 self.horizon_sec = int(model.get("horizon_sec", 30))
                 self.mode = "json-linear"
 
-        def predict_return(self, arr_prices: np.ndarray) -> float:
+        def predict_return(self, arr_prices: np.ndarray, points: list[dict[str, float]] | None = None) -> float:
             if self.sequence_model is not None:
                 import torch
 
@@ -155,10 +162,17 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
                 with torch.inference_mode():
                     return float(self.sequence_model(x_t).item())
 
-            x = latest_feature_vector_from_prices(arr_prices, self.feature_columns)
+            if points:
+                x = latest_feature_vector_from_price_points(points, self.feature_columns)
+            else:
+                x = latest_feature_vector_from_prices(arr_prices, self.feature_columns)
             if self.model_obj is not None:
-                if self.mode == "xgboost_classifier" and hasattr(self.model_obj, "predict_proba"):
-                    raw_proba = self.model_obj.predict_proba(x.reshape(1, -1))[0]
+                if self.feature_columns and len(self.feature_columns) == int(x.shape[0]):
+                    model_input = pd.DataFrame([x], columns=self.feature_columns)
+                else:
+                    model_input = x.reshape(1, -1)
+                if self.mode in {"xgboost_classifier", "lightgbm_classifier"} and hasattr(self.model_obj, "predict_proba"):
+                    raw_proba = self.model_obj.predict_proba(model_input)[0]
                     class_names = self.label_classes or ["down", "neutral", "up"]
                     prob_by_label = {
                         str(class_names[i]): float(raw_proba[i])
@@ -167,7 +181,10 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
                     up = prob_by_label.get("up", 0.0)
                     down = prob_by_label.get("down", 0.0)
                     return (up - down) * self.label_eps
-                return float(self.model_obj.predict(x.reshape(1, -1))[0])
+                pred_ret = float(self.model_obj.predict(model_input)[0])
+                if self.return_calibrator is not None:
+                    pred_ret = float(self.return_calibrator.predict(np.asarray([pred_ret], dtype=float))[0])
+                return pred_ret
 
             x_s = (x - self.mean) / self.scale
             return float(self.intercept + np.dot(x_s, self.weights))
@@ -191,6 +208,8 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
     @staticmethod
     def _alias_from_path(path: Path) -> str:
         name = path.name.lower()
+        if "lightgbm" in name or "lgbm" in name:
+            return "lightgbm"
         if "xgboost" in name:
             return "xgboost"
         if "lstm" in name:
@@ -207,15 +226,16 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
     def _discover_models(model_dir: Path) -> dict[str, Path]:
         aliases: dict[str, Path] = {}
         candidates = [
+            ("lightgbm", model_dir / "pulse_lightgbm_v1.joblib"),
             ("xgboost", model_dir / "pulse_xgboost_v1.joblib"),
-            ("xgboost", model_dir / "pulse_best_model.artifact"),
+            ("best", model_dir / "pulse_best_model.artifact"),
             ("lstm", model_dir / "pulse_lstm_v1.pt"),
             ("cnn", model_dir / "pulse_cnn_v1.pt"),
             ("transformer", model_dir / "pulse_transformer_v1.pt"),
         ]
         for alias, path in candidates:
             if path.exists() and path.is_file():
-                aliases[alias] = path.resolve()
+                aliases.setdefault(alias, path.resolve())
         for pattern in ("*.joblib", "*.artifact", "*.json", "*.pt"):
             for path in model_dir.glob(pattern):
                 if not path.is_file():
@@ -229,9 +249,13 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
         if not value:
             return self._default_alias
         alias_map = {
+            "lgbm": "lightgbm",
+            "lightgbm": "lightgbm",
             "xgb": "xgboost",
+            "xbgboost": "xgboost",
             "tree": "xgboost",
             "xgboost": "xgboost",
+            "best": "best",
             "lstm": "lstm",
             "cnn": "cnn",
             "transformer": "transformer",
@@ -259,6 +283,14 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
             file_mtime = path.stat().st_mtime_ns
             if current is None or current_mtime != file_mtime:
                 current = self._load_model(alias, path)
+            log_inference(
+                "model_select "
+                f"requested={requested_model_type or '<default>'} "
+                f"resolved={alias} "
+                f"path={path.name} "
+                f"loaded_name={current.name} "
+                f"mode={current.mode}"
+            )
             return alias, current
 
     @staticmethod
@@ -271,6 +303,13 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
             str(getattr(request, "channel", "") or ""),
             int(getattr(last, "ts", 0) or 0),
             float(getattr(last, "price", 0.0) or 0.0),
+            float(getattr(last, "bid_px", 0.0) or 0.0),
+            float(getattr(last, "ask_px", 0.0) or 0.0),
+            float(getattr(last, "trade_count", 0.0) or 0.0),
+            float(getattr(last, "trade_volume", 0.0) or 0.0),
+            float(getattr(last, "trade_imbalance", 0.0) or 0.0),
+            float(getattr(last, "delta_mid_price", 0.0) or 0.0),
+            float(getattr(last, "delta_spread", 0.0) or 0.0),
             len(points),
         )
 
@@ -278,7 +317,26 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
         started_ns = perf_counter_ns()
         selected_alias, model = self._get_model(getattr(request, "model_type", ""))
         points = list(request.points)
+        log_inference(
+            "grpc_request "
+            f"symbol={getattr(request, 'symbol', '')} "
+            f"channel={getattr(request, 'channel', '')} "
+            f"requested={getattr(request, 'model_type', '') or '<default>'} "
+            f"resolved={selected_alias} "
+            f"points={len(points)} "
+            f"horizonSec={int(getattr(request, 'horizon_sec', 0) or model.horizon_sec)} "
+            f"holdMs={int(getattr(request, 'hold_ms', 0) or 0)}"
+        )
         if len(points) < 8:
+            log_inference(
+                "grpc_response "
+                f"symbol={getattr(request, 'symbol', '')} "
+                f"channel={getattr(request, 'channel', '')} "
+                f"requested={getattr(request, 'model_type', '') or '<default>'} "
+                f"resolved={selected_alias} "
+                "signal=HOLD "
+                "detail=Need_at_least_8_points"
+            )
             return pb2.PredictResponse(
                 model_name=model.name,
                 signal="HOLD",
@@ -287,14 +345,73 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
 
         cache_key = (selected_alias, *self._request_cache_key(request, points))
         if self._cached_key == cache_key and self._cached_response is not None:
+            log_inference(
+                "grpc_response "
+                f"symbol={getattr(request, 'symbol', '')} "
+                f"channel={getattr(request, 'channel', '')} "
+                f"requested={getattr(request, 'model_type', '') or '<default>'} "
+                f"resolved={selected_alias} "
+                f"runtimeModel={self._cached_response.get('model_name', '')} "
+                f"signal={self._cached_response.get('signal', '')} "
+                "cache=hit"
+            )
             return pb2.PredictResponse(**self._cached_response)
 
         arr_prices = np.fromiter((float(p.price) for p in points), dtype=np.float64, count=len(points))
         last_price = float(arr_prices[-1])
 
         try:
-            pred_ret = model.predict_return(arr_prices)
+            feature_field_names = (
+                "mid_price",
+                "spread",
+                "rel_spread",
+                "microprice",
+                "imbalance",
+                "imbalance_l1",
+                "imbalance_l5",
+                "bid_vol_l5",
+                "ask_vol_l5",
+                "weighted_bid_depth",
+                "weighted_ask_depth",
+                "trade_count",
+                "trade_volume",
+                "trade_imbalance",
+                "trade_vwap_dev_from_mid",
+                "delta_mid_price",
+                "delta_spread",
+                "delta_imbalance_l5",
+                "is_snapshot",
+                "is_update",
+            )
+            feature_points = []
+            for idx, p in enumerate(points):
+                point_dict = {
+                    "ts": float(getattr(p, "ts", idx + 1) or idx + 1),
+                    "price": float(getattr(p, "price", 0.0) or 0.0),
+                    "bid_px": float(getattr(p, "bid_px", 0.0) or 0.0),
+                    "ask_px": float(getattr(p, "ask_px", 0.0) or 0.0),
+                    "bid_sz": float(getattr(p, "bid_sz", 0.0) or 0.0),
+                    "ask_sz": float(getattr(p, "ask_sz", 0.0) or 0.0),
+                }
+                extra_fields = {
+                    name: float(getattr(p, name, 0.0) or 0.0)
+                    for name in feature_field_names
+                }
+                if any(abs(value) > 1e-12 for value in extra_fields.values()):
+                    point_dict.update(extra_fields)
+                feature_points.append(point_dict)
+            pred_ret = model.predict_return(arr_prices, feature_points)
         except ValueError as err:
+            log_inference(
+                "grpc_response "
+                f"symbol={getattr(request, 'symbol', '')} "
+                f"channel={getattr(request, 'channel', '')} "
+                f"requested={getattr(request, 'model_type', '') or '<default>'} "
+                f"resolved={selected_alias} "
+                f"runtimeModel={model.name} "
+                "signal=HOLD "
+                f"error={str(err)}"
+            )
             return pb2.PredictResponse(
                 model_name=model.name,
                 signal="HOLD",
@@ -328,6 +445,18 @@ class PredictionService(pb2_grpc.PredictionServiceServicer):
         }
         self._cached_key = cache_key
         self._cached_response = response_payload
+        log_inference(
+            "grpc_response "
+            f"symbol={getattr(request, 'symbol', '')} "
+            f"channel={getattr(request, 'channel', '')} "
+            f"requested={getattr(request, 'model_type', '') or '<default>'} "
+            f"resolved={selected_alias} "
+            f"runtimeModel={model.name} "
+            f"signal={signal} "
+            f"predRet={pred_ret:.10f} "
+            f"inferUs={int((perf_counter_ns() - started_ns) / 1000)} "
+            "cache=miss"
+        )
         return pb2.PredictResponse(
             model_name=model.name,
             signal=signal,
@@ -361,6 +490,7 @@ def resolve_model_path(model_path: str, model_dir: str) -> Path:
         raise FileNotFoundError(f"Model not found: {requested}")
 
     preferred_names = [
+        "pulse_lightgbm_v1.joblib",
         "pulse_xgboost_v1.joblib",
         "pulse_best_model.artifact",
         "pulse_lstm_v1.pt",
@@ -375,9 +505,14 @@ def resolve_model_path(model_path: str, model_dir: str) -> Path:
         all_candidates.extend(search_dir.glob(pattern))
     all_candidates = [p for p in all_candidates if p.is_file()]
     if not all_candidates:
-        raise FileNotFoundError(f"No model artifact found in {search_dir}")
+        raise FileNotFoundError(
+            f"No model artifact found in {search_dir}. "
+            "Create one with `python -m ml_pipeline.models.train_xgb --dataset-csv data/train_dataset_btcusdt_h30.csv "
+            "--model-out-dir models --model-types xgboost,lightgbm` after collecting/labeling data, or create a local smoke-test "
+            "artifact with `python -m ml_pipeline.models.bootstrap_model --model-out models/pulse_xgboost_v1.joblib`."
+        )
 
-    all_candidates.sort(key=lambda p: p.stat().st_size)
+    all_candidates.sort(key=lambda p: p.stat().st_mtime_ns, reverse=True)
     return all_candidates[0]
 
 

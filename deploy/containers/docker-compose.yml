@@ -1,5 +1,5 @@
 services:
-  # Level 2 runtime: local Python inference behind gRPC.
+  # Level 2 runtime: local Python inference over gRPC.
   inference-python:
     build:
       context: ../../
@@ -11,6 +11,7 @@ services:
     environment:
       MODEL_PATH: ${MODEL_PATH:-/app/models/pulse_xgboost_v1.joblib}
       MODEL_DIR_PATH: ${MODEL_DIR_PATH:-/app/models}
+      SERVING_MODE: grpc
     volumes:
       - ../../models:/app/models:ro
     ports:
@@ -26,6 +27,15 @@ services:
       dockerfile: deploy/containers/Dockerfile.backend-cpp
     image: okx-trading/backend-cpp:local
     container_name: backend-cpp
+    environment:
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      NO_PROXY: "backend-cpp,inference-python,localhost,127.0.0.1"
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
+      no_proxy: "backend-cpp,inference-python,localhost,127.0.0.1"
     command:
       - "--grpc-port"
       - "50051"
@@ -35,16 +45,6 @@ services:
       - "grpc"
       - "--inference-grpc-target"
       - "inference-python:50061"
-      - "--inference-model-type"
-      - "${INFERENCE_MODEL_TYPE:-xgboost}"
-      - "--inference-horizon-sec"
-      - "${INFERENCE_HORIZON_SEC:-30}"
-      - "--inference-timeout-ms"
-      - "${INFERENCE_TIMEOUT_MS:-1200}"
-      - "--inference-interval-ms"
-      - "${INFERENCE_INTERVAL_MS:-200}"
-      - "--inference-min-points"
-      - "${INFERENCE_MIN_POINTS:-32}"
     volumes:
       - ../../backend/configs:/opt/app/configs:ro
     ports:
@@ -64,32 +64,22 @@ services:
     container_name: web-gateway
     environment:
       PORT: "8080"
-      PRED_GRPC_TARGET: backend-cpp:50051
+      PRED_GRPC_TARGET: "inference-python:50061"
       MARKET_GRPC_TARGET: backend-cpp:50051
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      NO_PROXY: "backend-cpp,inference-python,localhost,127.0.0.1"
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
+      no_proxy: "backend-cpp,inference-python,localhost,127.0.0.1"
     ports:
       - "8080:8080"
     profiles:
       - runtime
     depends_on:
-      - inference-python
-    restart: unless-stopped
-
-  # Browser-first UI (independent). Runs local simulation by default.
-  frontend-web:
-    build:
-      context: ../../
-      dockerfile: deploy/containers/Dockerfile.web-frontend
-    image: okx-trading/frontend-web:local
-    container_name: frontend-web
-    environment:
-      HOST: "0.0.0.0"
-      PORT: "5173"
-    ports:
-      - "5173:5173"
-    profiles:
-      - ui
-    depends_on:
-      - web-gateway
+      - backend-cpp
     restart: unless-stopped
 
   # C++ collector backend: same parser/feature path, but writes CSV and exits after duration.
@@ -122,7 +112,8 @@ services:
     container_name: label-maker
     command:
       - "python"
-      - "ml_pipeline/data/build_labels.py"
+      - "-m"
+      - "ml_pipeline.data.build_labels"
       - "--features-csv"
       - "${FEATURES_CSV:-/app/data/books_trades_btcusdt.features.csv}"
       - "--horizon-sec"
@@ -156,7 +147,8 @@ services:
     container_name: model-trainer
     command:
       - "python"
-      - "ml_pipeline/models/train_xgb.py"
+      - "-m"
+      - "ml_pipeline.models.train_xgb"
       - "--dataset-csv"
       - "${TRAIN_DATASET_CSV:-/app/data/train_dataset_btcusdt_h30.csv}"
       - "--model-out-dir"

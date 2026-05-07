@@ -37,7 +37,8 @@ private:
 						   double		   bid_px,
 						   double		   ask_px,
 						   double		   bid_sz,
-						   double		   ask_sz);
+						   double		   ask_sz,
+						   const trading::FeatureRow* feature_row);
 
 private:
 	std::optional<double>&					  _last_price;

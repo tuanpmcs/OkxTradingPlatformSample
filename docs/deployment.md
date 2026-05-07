@@ -1,36 +1,50 @@
 # Deployment
 
-## Containers
+OKX Pulse can run locally through Docker Compose and can be deployed to AWS through the ECS/EC2 assets in `deploy/`.
 
-- `deploy/containers/Dockerfile.backend-cpp`
-- `deploy/containers/Dockerfile.inference-python`
-- `deploy/containers/Dockerfile.web-gateway`
-- `deploy/containers/Dockerfile.web-frontend`
-- `deploy/containers/docker-compose.yml`
+## Local container run
 
-## Runtime compose
+Runtime stack:
 
 ```bash
 docker compose -f deploy/containers/docker-compose.yml --profile runtime up --build
 ```
 
-## Runtime + UI compose
-
-```bash
-docker compose -f deploy/containers/docker-compose.yml --profile runtime --profile ui up --build
-```
-
-## Training compose
+Training stack:
 
 ```bash
 docker compose -f deploy/containers/docker-compose.yml --profile training up --build model-trainer
 ```
 
-## Cloud extensions
+Main files:
 
-Use `deploy/ecs`, `deploy/sagemaker`, and `deploy/terraform` for managed deployment expansion.
+- `deploy/containers/Dockerfile.backend-cpp`
+- `deploy/containers/Dockerfile.inference-python`
+- `deploy/containers/Dockerfile.web-gateway`
+- `deploy/containers/docker-compose.yml`
 
-## AWS split deployment
+## AWS deployment
 
-- SageMaker inference endpoint: see `deploy/sagemaker/README.md` and `deploy/sagemaker/deploy_inference.sh`.
-- EC2 C++ stream runtime: see `deploy/ec2/README.md`, `deploy/ec2/push_backend_image.sh`, and `deploy/ec2/run_cpp_stream.sh`.
+- `deploy/ecs/`: ECS task definitions, services, and operational scripts
+- `deploy/ec2/`: EC2 runtime path for the C++ stream service
+- `deploy/terraform/`: infrastructure scope and suggested Terraform layout
+
+Core services:
+
+| Service | Container | Interface |
+| --- | --- | --- |
+| `backend-cpp` | `Dockerfile.backend-cpp` | `gRPC :50051` |
+| `inference-python` | `Dockerfile.inference-python` | `gRPC :50061` |
+| `web-gateway` | `Dockerfile.web-gateway` | `HTTP :8080` |
+
+## Recommendation
+
+- Use `ECS on EC2` for the lowest steady-state cost and most control
+- Use `ECS on Fargate` when simpler operations matter more than cost
+- Keep the inference hop on the internal gRPC path for the main runtime flow
+
+## Submission notes
+
+- Do not include local build directories, model artifacts, datasets, virtual environments, or `node_modules/`.
+- Use `scripts/prepare_submission.sh` from the repository root to create a clean zip.
+- See `aws_ec2_vs_fargate_comparison.md` for the cost and benchmark checklist.

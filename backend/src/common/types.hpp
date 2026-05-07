@@ -52,6 +52,7 @@ struct Books {
     std::uint64_t recv_ts_ms{};
     std::uint64_t sequence_id{};
     std::string instrument_id;
+    std::string action;
 };
 
 struct Books5 {
@@ -61,6 +62,7 @@ struct Books5 {
     std::uint64_t recv_ts_ms{};
     std::uint64_t sequence_id{};
     std::string instrument_id;
+    std::string action;
 };
 
 struct Trade {
@@ -156,6 +158,7 @@ inline std::ostream& operator<<(std::ostream& os, const Books& value) {
     os << ", exchange_ts_ms=" << value.exchange_ts_ms
        << ", recv_ts_ms=" << value.recv_ts_ms
        << ", sequence_id=" << value.sequence_id
+       << ", action=" << value.action
        << ", instrument_id=" << value.instrument_id
        << "}";
     return os;
@@ -170,6 +173,7 @@ inline std::ostream& operator<<(std::ostream& os, const Books5& value) {
     os << ", exchange_ts_ms=" << value.exchange_ts_ms
        << ", recv_ts_ms=" << value.recv_ts_ms
        << ", sequence_id=" << value.sequence_id
+       << ", action=" << value.action
        << ", instrument_id=" << value.instrument_id
        << "}";
     return os;

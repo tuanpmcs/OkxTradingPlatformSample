@@ -18,7 +18,7 @@ FeatureCsvWriter::FeatureCsvWriter(const std::string& path)
 void FeatureCsvWriter::write_header()
 {
 	m_out
-		<< "inst_id,book_ts,book_recv_ts,book_seq_id,"
+		<< "inst_id,book_action,is_snapshot,is_update,book_ts,book_recv_ts,book_seq_id,"
 		<< "best_bid_px,best_ask_px,best_bid_sz,best_ask_sz,"
 		<< "mid_price,spread,rel_spread,microprice,"
 		<< "imbalance_l1,imbalance_l5,bid_vol_l5,ask_vol_l5,"
@@ -33,6 +33,9 @@ void FeatureCsvWriter::write(const FeatureRow& row)
 {
 	m_out
 		<< row.inst_id << ','
+		<< row.book_action << ','
+		<< (row.book_action == "snapshot" ? 1 : 0) << ','
+		<< (row.book_action == "update" ? 1 : 0) << ','
 		<< row.book_ts << ','
 		<< row.book_recv_ts << ','
 		<< row.book_seq_id << ','

@@ -2,11 +2,13 @@
   "name": "okx-frontend",
   "private": true,
   "version": "1.0.0",
-  "description": "Frontend launcher for desktop and web apps",
+  "description": "Frontend launcher for the desktop app",
   "scripts": {
-    "start:web": "npm --prefix web start",
     "start:desktop": "npm --prefix electron start",
-    "install:web": "npm --prefix web install",
-    "install:desktop": "npm --prefix electron install"
+    "install:desktop": "npm --prefix electron install",
+    "pack:desktop": "npm --prefix electron run pack",
+    "dist:desktop": "npm --prefix electron run dist",
+    "dist:desktop:mac": "npm --prefix electron run dist:mac",
+    "dist:desktop:win": "npm --prefix electron run dist:win"
   }
 }

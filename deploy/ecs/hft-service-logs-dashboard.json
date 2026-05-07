@@ -1,0 +1,176 @@
+{
+  "widgets": [
+    {
+      "type": "text",
+      "x": 0,
+      "y": 0,
+      "width": 24,
+      "height": 1,
+      "properties": {
+        "markdown": "# HFT Service Logs\nEC2 and Fargate log widgets for `web`, `backend`, and `inference` in `us-east-2`."
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 1,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "region": "us-east-2",
+        "title": "ECS CPU Utilization",
+        "view": "timeSeries",
+        "stacked": false,
+        "stat": "Average",
+        "period": 60,
+        "metrics": [
+          [ "AWS/ECS", "CPUUtilization", "ClusterName", "hft-cluster-arm", "ServiceName", "okx-web-gateway", { "label": "ec2 web" } ],
+          [ "...", "okx-backend-cpp", { "label": "ec2 backend" } ],
+          [ "...", "okx-inference-python", { "label": "ec2 inference" } ],
+          [ "...", "okx-web-gateway-fg", { "label": "fargate web" } ],
+          [ "...", "okx-backend-cpp-fg", { "label": "fargate backend" } ],
+          [ "...", "okx-inference-python-fg", { "label": "fargate inference" } ]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 1,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "region": "us-east-2",
+        "title": "ECS Memory Utilization",
+        "view": "timeSeries",
+        "stacked": false,
+        "stat": "Average",
+        "period": 60,
+        "metrics": [
+          [ "AWS/ECS", "MemoryUtilization", "ClusterName", "hft-cluster-arm", "ServiceName", "okx-web-gateway", { "label": "ec2 web" } ],
+          [ "...", "okx-backend-cpp", { "label": "ec2 backend" } ],
+          [ "...", "okx-inference-python", { "label": "ec2 inference" } ],
+          [ "...", "okx-web-gateway-fg", { "label": "fargate web" } ],
+          [ "...", "okx-backend-cpp-fg", { "label": "fargate backend" } ],
+          [ "...", "okx-inference-python-fg", { "label": "fargate inference" } ]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 7,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "region": "us-east-2",
+        "title": "ALB Healthy Hosts",
+        "view": "timeSeries",
+        "stacked": false,
+        "stat": "Average",
+        "period": 60,
+        "metrics": [
+          [ "AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", "targetgroup/okx-web-gateway-tg/7a1902b13188a7ee", "LoadBalancer", "app/hft-loadbalancer/85689737b23bad35", { "label": "ec2 web targets" } ],
+          [ ".", "HealthyHostCount", "TargetGroup", "targetgroup/okx-web-gateway-fg-tg/f144abcae2e677a4", "LoadBalancer", "app/hft-fargate-alb/da9a2393c670635e", { "label": "fargate web targets" } ]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 7,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "region": "us-east-2",
+        "title": "ALB Request Count",
+        "view": "timeSeries",
+        "stacked": false,
+        "stat": "Sum",
+        "period": 60,
+        "metrics": [
+          [ "AWS/ApplicationELB", "RequestCount", "LoadBalancer", "app/hft-loadbalancer/85689737b23bad35", { "label": "ec2 alb" } ],
+          [ ".", "RequestCount", "LoadBalancer", "app/hft-fargate-alb/da9a2393c670635e", { "label": "fargate alb" } ]
+        ]
+      }
+    },
+    {
+      "type": "log",
+      "x": 0,
+      "y": 13,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "region": "us-east-2",
+        "title": "hft-ec2 web",
+        "view": "table",
+        "query": "SOURCE '/ecs/okx-web-gateway' | fields @timestamp, @message, @logStream | filter @logStream like /^ecs\\/web-gateway\\// | sort @timestamp desc | limit 100"
+      }
+    },
+    {
+      "type": "log",
+      "x": 12,
+      "y": 13,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "region": "us-east-2",
+        "title": "hft-fargate web",
+        "view": "table",
+        "query": "SOURCE '/ecs/okx-web-gateway' | fields @timestamp, @message, @logStream | filter @logStream like /^ecs-fargate\\/web-gateway\\// | sort @timestamp desc | limit 100"
+      }
+    },
+    {
+      "type": "log",
+      "x": 0,
+      "y": 19,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "region": "us-east-2",
+        "title": "hft-ec2 backend",
+        "view": "table",
+        "query": "SOURCE '/ecs/okx-backend-cpp' | fields @timestamp, @message, @logStream | filter @logStream like /^ecs\\/backend-cpp\\// | sort @timestamp desc | limit 100"
+      }
+    },
+    {
+      "type": "log",
+      "x": 12,
+      "y": 19,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "region": "us-east-2",
+        "title": "hft-fargate backend",
+        "view": "table",
+        "query": "SOURCE '/ecs/okx-backend-cpp' | fields @timestamp, @message, @logStream | filter @logStream like /^ecs-fargate\\/backend-cpp\\// | sort @timestamp desc | limit 100"
+      }
+    },
+    {
+      "type": "log",
+      "x": 0,
+      "y": 25,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "region": "us-east-2",
+        "title": "hft-ec2 inference",
+        "view": "table",
+        "query": "SOURCE '/ecs/okx-inference-python' | fields @timestamp, @message, @logStream | filter @logStream like /^ecs\\/inference-python\\// | sort @timestamp desc | limit 100"
+      }
+    },
+    {
+      "type": "log",
+      "x": 12,
+      "y": 25,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "region": "us-east-2",
+        "title": "hft-fargate inference",
+        "view": "table",
+        "query": "SOURCE '/ecs/okx-inference-python' | fields @timestamp, @message, @logStream | filter @logStream like /^ecs-fargate\\/inference-python\\// | sort @timestamp desc | limit 100"
+      }
+    }
+  ]
+}

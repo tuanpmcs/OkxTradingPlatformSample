@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from ml_pipeline.serving.app import PredictionService, signal_from_return
+from ml_pipeline.serving.app import PredictionService, log_inference, signal_from_return
 
 
 class InferenceEngine:
@@ -29,6 +29,10 @@ class InferenceEngine:
                     {
                         "ts": int(point.get("ts", idx + 1)),
                         "price": float(point["price"]),
+                        "bid_px": float(point.get("bid_px", point.get("bidPx", 0.0)) or 0.0),
+                        "ask_px": float(point.get("ask_px", point.get("askPx", 0.0)) or 0.0),
+                        "bid_sz": float(point.get("bid_sz", point.get("bidSz", 0.0)) or 0.0),
+                        "ask_sz": float(point.get("ask_sz", point.get("askSz", 0.0)) or 0.0),
                     }
                 )
             return out
@@ -44,8 +48,18 @@ class InferenceEngine:
         points = self._to_points(payload)
         prices = np.fromiter((float(p["price"]) for p in points), dtype=np.float64, count=len(points))
 
-        requested_model_type = str(payload.get("model_type", "") or "")
+        requested_model_type = str(payload.get("model_type", payload.get("modelType", "")) or "")
         selected_alias, model = self._service._get_model(requested_model_type)
+        log_inference(
+            "http_predict "
+            f"requested={requested_model_type or '<default>'} "
+            f"selected={selected_alias} "
+            f"model_name={model.name} "
+            f"path={model.path.name} "
+            f"points={int(prices.size)} "
+            f"symbol={payload.get('symbol', '')} "
+            f"channel={payload.get('channel', '')}"
+        )
 
         if prices.size < 8:
             last_price = float(prices[-1]) if prices.size > 0 else 0.0
@@ -60,7 +74,7 @@ class InferenceEngine:
 
         last_price = float(prices[-1])
         try:
-            pred_ret = model.predict_return(prices)
+            pred_ret = model.predict_return(prices, points)
         except ValueError as err:
             return {
                 "model_name": model.name,
@@ -79,7 +93,9 @@ class InferenceEngine:
                 "mode": model.mode,
                 "alias": selected_alias,
                 "points": int(prices.size),
-                "horizon_sec": int(payload.get("horizon_sec", model.horizon_sec) or model.horizon_sec),
+                "horizon_sec": int(
+                    payload.get("horizon_sec", payload.get("horizonSec", model.horizon_sec)) or model.horizon_sec
+                ),
                 "infer_us": int((perf_counter_ns() - started_ns) / 1000),
             },
             separators=(",", ":"),
@@ -98,22 +114,33 @@ class InferenceEngine:
 class SageMakerHandler(BaseHTTPRequestHandler):
     engine: InferenceEngine
 
+    def _send_common_headers(self, content_type: str, content_length: int) -> None:
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(content_length))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type,Authorization")
+
     def _write_json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
+        self._send_common_headers("application/json", len(body))
         self.end_headers()
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/ping":
+        if self.path in {"/ping", "/health"}:
             self._write_json(HTTPStatus.OK, {"status": "ok"})
             return
         self._write_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self._send_common_headers("text/plain; charset=utf-8", 0)
+        self.end_headers()
+
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/invocations":
+        if self.path not in {"/invocations", "/predict"}:
             self._write_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
 
@@ -127,6 +154,15 @@ class SageMakerHandler(BaseHTTPRequestHandler):
             payload = json.loads(body.decode("utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("Request body must be a JSON object")
+            log_inference(
+                "http_request "
+                f"path={self.path} "
+                f"origin={self.headers.get('Origin', '')} "
+                f"modelType={payload.get('modelType', payload.get('model_type', ''))} "
+                f"symbol={payload.get('symbol', '')} "
+                f"channel={payload.get('channel', '')} "
+                f"points={len(payload.get('points', [])) if isinstance(payload.get('points'), list) else 0}"
+            )
             result = self.engine.predict(payload)
         except Exception as err:  # pragma: no cover
             self._write_json(HTTPStatus.BAD_REQUEST, {"error": str(err)})

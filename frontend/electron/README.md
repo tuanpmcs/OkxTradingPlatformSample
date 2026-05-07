@@ -21,6 +21,33 @@ npm install
 npm start
 ```
 
+## Build Desktop Installers
+
+This Electron app can now be packaged for both macOS and Windows.
+
+1. Install dependencies:
+
+```bash
+cd frontend/electron
+npm install
+```
+
+2. Build from the operating system you want to target:
+
+```bash
+npm run dist:mac
+npm run dist:win
+```
+
+Artifacts are written to `frontend/electron/dist/`.
+
+Notes:
+
+- `npm start` now works on both macOS and Windows.
+- The app bundles its own `proto/market_data.proto`, so installed builds do not depend on files in `backend/`.
+- macOS `.dmg` builds are best produced on macOS.
+- Windows `nsis` installers are best produced on Windows.
+
 ## Lovable workflow
 
 1. Build the UI in Lovable and export static files.
@@ -37,7 +64,7 @@ cd frontend/electron
 npm start
 ```
 
-If your shell has `ELECTRON_RUN_AS_NODE=1`, `npm start` already unsets it automatically.
+If your shell has `ELECTRON_RUN_AS_NODE=1`, `npm start` now clears it automatically before Electron launches.
 
 Electron will automatically load Lovable export first. If it does not exist, it falls back to the built-in UI.
 
@@ -61,10 +88,8 @@ For a ready-to-paste Lovable prompt, use:
 ## Strategy Auto Trade
 
 - Model selector supports:
+  - `LightGBM`
   - `XGBoost`
-  - `LSTM`
-  - `CNN`
-  - `Transformer`
 - Config selector supports:
   - `Market Maker`
   - `Alpha Fast`

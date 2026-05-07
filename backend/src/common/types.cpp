@@ -1,6 +1,30 @@
 
 #include "common/types.hpp"
 
+namespace
+{
+std::string extract_action_from_json(std::string_view json)
+{
+    const auto key_pos = json.find("\"action\"");
+    if (key_pos == std::string_view::npos) {
+        return {};
+    }
+    const auto colon_pos = json.find(':', key_pos);
+    if (colon_pos == std::string_view::npos) {
+        return {};
+    }
+    const auto first_quote = json.find('"', colon_pos + 1);
+    if (first_quote == std::string_view::npos) {
+        return {};
+    }
+    const auto second_quote = json.find('"', first_quote + 1);
+    if (second_quote == std::string_view::npos || second_quote <= first_quote + 1) {
+        return {};
+    }
+    return std::string(json.substr(first_quote + 1, second_quote - first_quote - 1));
+}
+}  // namespace
+
 std::optional<Channel> Parser::parse_channel(std::string_view channel) {
     if (channel == "books")  return Channel::BOOKS;
     if (channel == "books5") return Channel::BOOKS5;
@@ -228,6 +252,8 @@ std::optional<Arg> Parser::parse_arg() {
 }
 
 std::optional<Books> Parser::parse_books() {
+    const auto action = extract_action_from_json(std::string_view(_json.data(), _json.size()));
+
     auto doc_result = _parser.iterate(_json);
     if (doc_result.error()) {
         return std::nullopt;
@@ -235,6 +261,7 @@ std::optional<Books> Parser::parse_books() {
 
     auto doc = std::move(doc_result.value());
     Books out{};
+    out.action = action;
 
     {
         auto inst = doc["arg"]["instId"].get_string();
@@ -308,6 +335,8 @@ std::optional<Books> Parser::parse_books() {
 }
 
 std::optional<Books5> Parser::parse_books5() {
+    const auto action = extract_action_from_json(std::string_view(_json.data(), _json.size()));
+
     auto doc_result = _parser.iterate(_json);
     if (doc_result.error()) {
         return std::nullopt;
@@ -315,6 +344,7 @@ std::optional<Books5> Parser::parse_books5() {
 
     auto doc = std::move(doc_result.value());
     Books5 out{};
+    out.action = action;
 
     {
         auto inst = doc["arg"]["instId"].get_string();

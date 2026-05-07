@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package marketstream;
+
+service MarketData {
+  rpc Subscribe(SubscribeRequest) returns (stream Tick);
+}
+
+service PredictionService {
+  rpc Predict(PredictRequest) returns (PredictResponse);
+}
+
+message SubscribeRequest {
+  string symbol = 1;
+  string channel = 2;
+}
+
+message Tick {
+  int64 ts = 1;
+  double price = 2;
+  double change = 3;
+  string source = 4;
+  string raw_json = 5;
+  map<string, string> fields = 6;
+  repeated string changed_fields = 7;
+}
+
+message PricePoint {
+  int64 ts = 1;
+  double price = 2;
+  double bid_px = 3;
+  double ask_px = 4;
+  double bid_sz = 5;
+  double ask_sz = 6;
+  double mid_price = 7;
+  double spread = 8;
+  double rel_spread = 9;
+  double microprice = 10;
+  double imbalance = 11;
+  double imbalance_l1 = 12;
+  double imbalance_l5 = 13;
+  double bid_vol_l5 = 14;
+  double ask_vol_l5 = 15;
+  double weighted_bid_depth = 16;
+  double weighted_ask_depth = 17;
+  double trade_count = 18;
+  double trade_volume = 19;
+  double trade_imbalance = 20;
+  double trade_vwap_dev_from_mid = 21;
+  double delta_mid_price = 22;
+  double delta_spread = 23;
+  double delta_imbalance_l5 = 24;
+  double is_snapshot = 25;
+  double is_update = 26;
+}
+
+message PredictRequest {
+  string symbol = 1;
+  string channel = 2;
+  int32 horizon_sec = 3;
+  repeated PricePoint points = 4;
+  string strategy_mode = 5;
+  int32 hold_ms = 6;
+  double mm_adverse_ret_threshold = 7;
+  double mm_one_sided_imbalance_threshold = 8;
+  double min_spread_bps = 9;
+  double alpha_imbalance_threshold = 10;
+  double alpha_pred_ret_threshold = 11;
+  double max_entry_spread_bps = 12;
+  string model_type = 13;
+}
+
+message PredictResponse {
+  string model_name = 1;
+  string signal = 2;
+  double last_price = 3;
+  double predicted_price = 4;
+  double predicted_return = 5;
+  string detail = 6;
+}

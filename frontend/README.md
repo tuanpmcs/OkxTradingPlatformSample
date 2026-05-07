@@ -1,17 +1,12 @@
-# Frontend Split
+# Frontend
 
-This repository keeps two separate operator UIs:
+This repository uses a single operator UI:
 
-- `frontend/web`: browser-first UI (docker-friendly, independent).
 - `frontend/electron`: desktop UI (Electron app with richer workstation flow).
 
 ## Quick Run
 
 From `frontend/`:
-
-```bash
-npm run start:web
-```
 
 ```bash
 npm run start:desktop
@@ -20,12 +15,20 @@ npm run start:desktop
 ## Install
 
 ```bash
-npm run install:web
 npm run install:desktop
 ```
 
-## Runtime Endpoints
+## Package Installers
 
-- Web app default: `http://127.0.0.1:5173`
-- Gateway default: `http://127.0.0.1:8080`
-- Backend gRPC: `127.0.0.1:50051`
+```bash
+npm run pack:desktop
+```
+
+Create distributable installers from the current OS:
+
+```bash
+npm run dist:desktop:mac
+npm run dist:desktop:win
+```
+
+Use the macOS command on macOS and the Windows command on Windows for the most reliable results.

@@ -155,6 +155,10 @@ int main(int argc, char* argv[])
 		{
 			inference_cfg.max_points = static_cast<std::size_t>(std::max(8, std::stoi(argv[++i])));
 		}
+		else if (arg == "--enable-stream-predictions")
+		{
+			inference_cfg.stream_predictions_enabled = true;
+		}
 		else if (arg == "--onnx-model-path" && i + 1 < argc)
 		{
 			inference_cfg.onnx_model_path = argv[++i];
@@ -195,10 +199,14 @@ int main(int argc, char* argv[])
 		LOG_STREAM_INFO("Local inference mode: gRPC target=" << inference_cfg.grpc_target
 															  << ", model=" << inference_cfg.model_type
 															  << ", timeout_ms=" << inference_cfg.timeout_ms
-															  << ", interval_ms=" << inference_cfg.interval_ms);
+															  << ", interval_ms=" << inference_cfg.interval_ms
+															  << ", stream_predictions="
+															  << (inference_cfg.stream_predictions_enabled ? "on" : "off"));
 		break;
 	case InferenceMode::Onnx:
-		LOG_STREAM_INFO("Local inference mode: ONNX model=" << inference_cfg.onnx_model_path);
+		LOG_STREAM_INFO("Local inference mode: ONNX model=" << inference_cfg.onnx_model_path
+															 << ", stream_predictions="
+															 << (inference_cfg.stream_predictions_enabled ? "on" : "off"));
 		break;
 	}
 

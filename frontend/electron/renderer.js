@@ -28,14 +28,22 @@ const simModeBadge = document.getElementById('sim-mode-badge');
 const simAutoBadge = document.getElementById('sim-auto-badge');
 const simRuleHint = document.getElementById('sim-rule-hint');
 const simAdverseTitle = document.getElementById('sim-adverse-title');
+const simAdverseHelp = document.getElementById('sim-adverse-help');
 const simMinSpreadWrap = document.getElementById('sim-min-spread-wrap');
 const simAdverseWrap = document.getElementById('sim-adverse-wrap');
+const simMmOneSidedValue = document.getElementById('sim-mm-one-sided-value');
+const simAlphaConfirmValue = document.getElementById('sim-alpha-confirm-value');
+const simMaxEntrySpreadValue = document.getElementById('sim-max-entry-spread-value');
+const simAlphaCooldownValue = document.getElementById('sim-alpha-cooldown-value');
+const simDecisionBasis = document.getElementById('sim-decision-basis');
+const simPredictBtn = document.getElementById('sim-predict-btn');
 const simAutoStartBtn = document.getElementById('sim-auto-start-btn');
 const simAutoStopBtn = document.getElementById('sim-auto-stop-btn');
 const simAccountResetBtn = document.getElementById('sim-account-reset-btn');
 const simSummary = document.getElementById('sim-summary');
 const simSignal = document.getElementById('sim-signal');
 const simPredPrice = document.getElementById('sim-pred-price');
+const simPredRet = document.getElementById('sim-pred-ret');
 const simExpPnl = document.getElementById('sim-exp-pnl');
 const simLivePnl = document.getElementById('sim-live-pnl');
 const simLiveEquity = document.getElementById('sim-live-equity');
@@ -48,10 +56,21 @@ const simAccountAction = document.getElementById('sim-account-action');
 
 const subscriptionRows = document.getElementById('subscription-rows');
 const addRowBtn = document.getElementById('add-row-btn');
+const gatewayPresetSelect = document.getElementById('gateway-preset-select');
 const urlInput = document.getElementById('url-input');
+const predictionTargetInput = document.getElementById('prediction-target-input');
 const connectBtn = document.getElementById('connect-btn');
 const simulateBtn = document.getElementById('simulate-btn');
 const stopBtn = document.getElementById('stop-btn');
+const GATEWAY_PRESET_STORAGE_KEY = 'pulseDesk.gatewayPreset';
+const URL_STORAGE_KEY = 'pulseDesk.streamUrl';
+const PREDICTION_TARGET_STORAGE_KEY = 'pulseDesk.predictionTarget';
+const MODEL_TYPE_STORAGE_KEY = 'pulseDesk.modelType';
+const GATEWAY_PRESETS = {
+  local: 'grpc://127.0.0.1:50051',
+  'aws-ec2': 'http://hft-loadbalancer-1038079046.us-east-2.elb.amazonaws.com',
+  'aws-fargate': 'http://hft-fargate-alb-36714288.us-east-2.elb.amazonaws.com'
+};
 
 const msgTimestamps = [];
 const pointQueue = [];
@@ -74,10 +93,8 @@ const PREBUILT_MODEL = {
   }
 };
 const MODEL_OPTIONS = {
-  xgboost: 'XGBoost',
-  lstm: 'LSTM',
-  cnn: 'CNN',
-  transformer: 'Transformer'
+  lightgbm: 'LightGBM',
+  xgboost: 'XGBoost'
 };
 const CONFIG_PROFILES = {
   market_maker: {
@@ -85,10 +102,10 @@ const CONFIG_PROFILES = {
     strategy: 'market_making',
     capital: '5,000',
     holdMs: 100,
-    horizonSec: 30,
+    horizonMs: 100,
     autoRangeSec: 600,
     imbalanceThreshold: 0.2,
-    adverseThreshold: 0.0006,
+    adverseThreshold: 0.00025,
     minSpreadBps: 0.8,
     alphaCooldownMs: 250,
     summary: 'Config Market Maker applied: balanced quoting with adverse-selection protection.'
@@ -103,7 +120,8 @@ const predictionState = {
   totalFailures: 0,
   lastLatencyMs: 0,
   lastResult: null,
-  lastError: ''
+  lastError: '',
+  lastRequestedModelType: 'xgboost'
 };
 const PREDICTION_POINTS_MAX = 80;
 const PREDICTION_STUCK_MS = 2200;
@@ -143,11 +161,18 @@ const simulator = window.PulseSimulator.create({
     simAutoBadge,
     simRuleHint,
     simAdverseTitle,
+    simAdverseHelp,
     simMinSpreadWrap,
     simAdverseWrap,
+    simMmOneSidedValue,
+    simAlphaConfirmValue,
+    simMaxEntrySpreadValue,
+    simAlphaCooldownValue,
+    simDecisionBasis,
     simSummary,
     simSignal,
     simPredPrice,
+    simPredRet,
     simExpPnl,
     simLivePnl,
     simLiveEquity,
@@ -164,6 +189,15 @@ const simulator = window.PulseSimulator.create({
     requestPrediction: (series, force) => requestPrediction(series, force, predictionSeriesKeyHint || activeGrpcSeriesKey),
     getLastPrediction: () => predictionState.lastResult,
     getPredictionError: () => predictionState.lastError,
+    getLastRequestedModelType: () => predictionState.lastRequestedModelType,
+    onAutoTradingChange: (running) => {
+      if (running) {
+        void requestActiveSeriesPrediction(true);
+        startPredictionPolling();
+      } else {
+        stopPredictionPolling();
+      }
+    },
     resolveActiveSeries: () => resolveActiveSeries(),
     getSeriesByKey: (key) => grpcSeriesByKey.get(key),
     getActiveSeriesKey: () => activeGrpcSeriesKey
@@ -536,6 +570,7 @@ function calculatePrediction(series) {
   return {
     signal,
     score: bounded,
+    predictedReturn: bounded,
     lastPrice: last,
     predictedPrice,
     modelName: PREBUILT_MODEL.name,
@@ -556,6 +591,7 @@ function toGrpcPrediction(result) {
   return {
     signal: result.signal || (predictedPrice > lastPrice ? 'BUY' : 'HOLD'),
     score: Number.isFinite(predictedReturn) ? predictedReturn : 0,
+    predictedReturn: Number.isFinite(predictedReturn) ? predictedReturn : 0,
     lastPrice,
     predictedPrice,
     modelName: result.model_name || 'PredictionService',
@@ -586,23 +622,179 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function normalizeEndpointInput(raw) {
+  const value = String(raw || '').trim();
+  if (!value) {
+    return 'grpc://127.0.0.1:50051';
+  }
+  if (
+    value.startsWith('grpc://')
+    || value.startsWith('ws://')
+    || value.startsWith('wss://')
+    || value.startsWith('http://')
+    || value.startsWith('https://')
+  ) {
+    return value;
+  }
+  if (value.includes('amazonaws.com') || value.includes('.elb.') || value.includes('/')) {
+    return `http://${value.replace(/^\/+/, '')}`;
+  }
+  return `grpc://${value}`;
+}
+
+function detectGatewayPreset(rawUrl) {
+  const normalized = normalizeEndpointInput(rawUrl);
+  for (const [preset, value] of Object.entries(GATEWAY_PRESETS)) {
+    if (normalized === value) {
+      return preset;
+    }
+  }
+  return 'custom';
+}
+
+function setGatewayPresetValue(rawUrl) {
+  if (!gatewayPresetSelect) {
+    return;
+  }
+  gatewayPresetSelect.value = detectGatewayPreset(rawUrl);
+}
+
+function normalizePredictionTargetInput(raw, streamUrl = normalizeEndpointInput(urlInput?.value || '')) {
+  const value = String(raw || '').trim();
+  if (!value) {
+    if (streamUrl.startsWith('http://') || streamUrl.startsWith('https://')) {
+      return '';
+    }
+    const grpcUrl = normalizeEndpointInput(streamUrl);
+    if (!grpcUrl.startsWith('grpc://')) {
+      return 'grpc://127.0.0.1:50061';
+    }
+    try {
+      const parsed = new URL(grpcUrl);
+      const host = parsed.hostname || '127.0.0.1';
+      return `grpc://${host}:50061`;
+    } catch (_error) {
+      return 'grpc://127.0.0.1:50061';
+    }
+  }
+  if (
+    value.startsWith('grpc://')
+    || value.startsWith('http://')
+    || value.startsWith('https://')
+  ) {
+    return value;
+  }
+  if (value.includes('amazonaws.com') || value.includes('.elb.')) {
+    return `grpc://${value.replace(/^\/+/, '')}`;
+  }
+  if (value.includes(':')) {
+    return `grpc://${value}`;
+  }
+  return `grpc://${value}:50061`;
+}
+
+function alignPredictionTargetForStream(streamUrl, predictionTarget) {
+  const normalizedStreamUrl = normalizeEndpointInput(streamUrl);
+  const normalizedPredictionTarget = normalizePredictionTargetInput(predictionTarget, normalizedStreamUrl);
+  if (
+    (normalizedStreamUrl.startsWith('http://') || normalizedStreamUrl.startsWith('https://'))
+    && (normalizedPredictionTarget === 'grpc://127.0.0.1:50061' || normalizedPredictionTarget === 'grpc://localhost:50061')
+  ) {
+    return '';
+  }
+  return normalizedPredictionTarget;
+}
+
+function persistEndpointInput() {
+  try {
+    localStorage.setItem(URL_STORAGE_KEY, normalizeEndpointInput(urlInput.value));
+  } catch (_error) {
+    // Ignore persistence errors in restricted environments.
+  }
+}
+
+function persistGatewayPresetInput() {
+  try {
+    localStorage.setItem(
+      GATEWAY_PRESET_STORAGE_KEY,
+      gatewayPresetSelect?.value || detectGatewayPreset(urlInput?.value || '')
+    );
+  } catch (_error) {
+    // Ignore persistence errors in restricted environments.
+  }
+}
+
+function persistPredictionTargetInput() {
+  try {
+    const normalized = normalizePredictionTargetInput(predictionTargetInput?.value || '', urlInput?.value || '');
+    localStorage.setItem(PREDICTION_TARGET_STORAGE_KEY, normalized);
+  } catch (_error) {
+    // Ignore persistence errors in restricted environments.
+  }
+}
+
+function persistModelTypeInput() {
+  try {
+    localStorage.setItem(MODEL_TYPE_STORAGE_KEY, String(simModelSelect?.value || 'xgboost'));
+  } catch (_error) {
+    // Ignore persistence errors in restricted environments.
+  }
+}
+
+function hydrateEndpointInput() {
+  try {
+    const savedPreset = localStorage.getItem(GATEWAY_PRESET_STORAGE_KEY);
+    const saved = localStorage.getItem(URL_STORAGE_KEY);
+    if (saved) {
+      urlInput.value = saved;
+    }
+    if (gatewayPresetSelect) {
+      gatewayPresetSelect.value = savedPreset && (savedPreset in GATEWAY_PRESETS || savedPreset === 'custom')
+        ? savedPreset
+        : detectGatewayPreset(urlInput?.value || '');
+    }
+    const savedPredictionTarget = localStorage.getItem(PREDICTION_TARGET_STORAGE_KEY);
+    if (predictionTargetInput) {
+      predictionTargetInput.value = alignPredictionTargetForStream(
+        urlInput?.value || '',
+        savedPredictionTarget || normalizePredictionTargetInput('', urlInput?.value || '')
+      );
+    }
+    const savedModelType = localStorage.getItem(MODEL_TYPE_STORAGE_KEY);
+    if (simModelSelect && savedModelType && MODEL_OPTIONS[savedModelType]) {
+      simModelSelect.value = savedModelType;
+    }
+  } catch (_error) {
+    // Ignore persistence errors in restricted environments.
+  }
+}
+
 function getAdaptivePredictionMinIntervalMs() {
   const holdMs = Number(simHoldMsInput?.value);
   const base = Number.isFinite(holdMs) && holdMs > 0 ? holdMs : 500;
-  return clamp(Math.round(base * 0.2), 50, 600);
+  return clamp(Math.round(base), 100, 60000);
 }
 
 function getAdaptivePredictionPollMs() {
   const holdMs = Number(simHoldMsInput?.value);
   const base = Number.isFinite(holdMs) && holdMs > 0 ? holdMs : 500;
-  return clamp(Math.round(base * 0.25), 60, 700);
+  return clamp(Math.round(base), 100, 60000);
+}
+
+function syncPredictionHorizonInput() {
+  if (!simHorizonInput) {
+    return;
+  }
+  const holdMs = Number(simHoldMsInput?.value);
+  const normalizedHoldMs = Number.isFinite(holdMs) && holdMs > 0 ? Math.round(holdMs) : 500;
+  simHorizonInput.value = String(normalizedHoldMs);
 }
 
 function buildPredictionPayload(series, seriesKey = activeGrpcSeriesKey) {
   const points = Array.isArray(series) ? series.slice(-PREDICTION_POINTS_MAX) : [];
   const [channel = '', symbol = ''] = normalizePredictionSeriesKey(seriesKey).split(':');
-  const horizonSec = Math.max(1, Number(simHorizonInput?.value || 30));
   const cfg = readStrategyConfig();
+  const horizonSec = Math.max(1, Math.ceil(cfg.holdMs / 1000));
   return {
     symbol,
     channel,
@@ -616,8 +808,15 @@ function buildPredictionPayload(series, seriesKey = activeGrpcSeriesKey) {
     alphaImbalanceThreshold: cfg.imbalanceThreshold,
     alphaPredRetThreshold: cfg.alphaPredRetThreshold,
     maxEntrySpreadBps: cfg.maxEntrySpreadBps,
+    predictionTarget: normalizePredictionTargetInput(predictionTargetInput?.value || '', urlInput?.value || ''),
     points
   };
+}
+
+function shouldRetryWithXgboost(errorText, requestedModelType) {
+  const message = String(errorText || '').toLowerCase();
+  return requestedModelType === 'lightgbm'
+    && (message.includes("no module named 'lightgbm'") || message.includes('lightgbm'));
 }
 
 async function requestPrediction(series, force = false, seriesKey = predictionSeriesKeyHint || activeGrpcSeriesKey) {
@@ -646,12 +845,22 @@ async function requestPrediction(series, force = false, seriesKey = predictionSe
   predictionState.totalRequests += 1;
   try {
     const payload = buildPredictionPayload(series, seriesKey);
-    const response = await window.streamApi.predict(payload);
+    predictionState.lastRequestedModelType = String(payload.modelType || 'xgboost');
+    let response = await window.streamApi.predict(payload);
+    if ((!response?.ok || !response.prediction) && shouldRetryWithXgboost(response?.error, payload.modelType)) {
+      payload.modelType = 'xgboost';
+      predictionState.lastRequestedModelType = 'xgboost';
+      if (simModelSelect) simModelSelect.value = 'xgboost';
+      simulator.refreshStrategyUi();
+      predictionState.lastError = 'LightGBM unavailable in runtime; retried with XGBoost.';
+      response = await window.streamApi.predict(payload);
+    }
     if (response?.ok && response.prediction) {
       predictionState.lastResult = toGrpcPrediction(response.prediction);
       predictionState.lastError = '';
       predictionState.lastSuccessAt = Date.now();
       predictionState.lastLatencyMs = predictionState.lastSuccessAt - now;
+      simulator.refreshStrategyUi();
       return predictionState.lastResult;
     }
     predictionState.lastError = response?.error || 'gRPC prediction failed';
@@ -661,6 +870,7 @@ async function requestPrediction(series, force = false, seriesKey = predictionSe
     if (fallback) {
       predictionState.lastError = `${predictionState.lastError} (using local fallback)`;
     }
+    simulator.refreshStrategyUi();
   } catch (error) {
     predictionState.lastError = error?.message || String(error);
     predictionState.totalFailures += 1;
@@ -669,6 +879,7 @@ async function requestPrediction(series, force = false, seriesKey = predictionSe
     if (fallback) {
       predictionState.lastError = `${predictionState.lastError} (using local fallback)`;
     }
+    simulator.refreshStrategyUi();
   } finally {
     predictionState.pending = false;
     predictionState.pendingStartedAt = 0;
@@ -677,18 +888,39 @@ async function requestPrediction(series, force = false, seriesKey = predictionSe
 }
 
 function startPredictionPolling() {
+  stopPredictionPolling();
+  const pollMs = getAdaptivePredictionPollMs();
+  if (!Number.isFinite(pollMs) || pollMs <= 0) {
+    return;
+  }
+  predictionPollTimer = setInterval(() => {
+    void requestActiveSeriesPrediction(false);
+  }, pollMs);
+}
+
+function stopPredictionPolling() {
   if (predictionPollTimer) {
     clearInterval(predictionPollTimer);
+    predictionPollTimer = null;
   }
-  const pollMs = getAdaptivePredictionPollMs();
-  predictionPollTimer = setInterval(() => {
-    const resolved = resolveActiveSeries();
-    if (!resolved?.series) {
-      return;
+}
+
+async function requestActiveSeriesPrediction(force = true) {
+  const resolved = resolveActiveSeries();
+  if (!resolved?.series || resolved.series.length === 0) {
+    if (simSummary) {
+      simSummary.textContent = 'No active series data yet. Connect stream and wait for ticks.';
     }
-    predictionSeriesKeyHint = resolved.key || activeGrpcSeriesKey;
-    requestPrediction(resolved.series, false, predictionSeriesKeyHint);
-  }, pollMs);
+    return null;
+  }
+  if (resolved.series.length < 8) {
+    if (simSummary) {
+      simSummary.textContent = `Need at least 8 points before requesting prediction. Current series has ${resolved.series.length}.`;
+    }
+    return predictionState.lastResult;
+  }
+  predictionSeriesKeyHint = resolved.key || activeGrpcSeriesKey;
+  return await requestPrediction(resolved.series, force, predictionSeriesKeyHint);
 }
 
 function parseMoneyInput(inputEl, fallback = 0) {
@@ -952,20 +1184,36 @@ function startLoop() {
 }
 
 connectBtn.addEventListener('click', async () => {
+  stopPredictionPolling();
   const subscriptions = getSubscriptions();
   const primary = subscriptions[0] || { symbol: 'BTC-USDT', channel: 'books' };
   pickActiveGrpcSeriesKey(subscriptions);
   notifyChartSymbol(primary.symbol);
+  const normalizedUrl = normalizeEndpointInput(urlInput.value);
+  const normalizedPredictionTarget = alignPredictionTargetForStream(
+    normalizedUrl,
+    predictionTargetInput?.value || ''
+  );
+  urlInput.value = normalizedUrl;
+  setGatewayPresetValue(normalizedUrl);
+  if (predictionTargetInput) {
+    predictionTargetInput.value = normalizedPredictionTarget;
+  }
+  persistGatewayPresetInput();
+  persistEndpointInput();
+  persistPredictionTargetInput();
   await window.streamApi.start({
     symbol: primary.symbol,
     channel: primary.channel,
     subscriptions,
-    url: urlInput.value.trim(),
+    url: normalizedUrl,
+    predictionTarget: normalizedPredictionTarget,
     simulated: false
   });
 });
 
 simulateBtn.addEventListener('click', async () => {
+  stopPredictionPolling();
   const subscriptions = getSubscriptions();
   const primary = subscriptions[0] || { symbol: 'BTC-USDT', channel: 'books' };
   pickActiveGrpcSeriesKey(subscriptions);
@@ -978,8 +1226,47 @@ simulateBtn.addEventListener('click', async () => {
 });
 
 stopBtn.addEventListener('click', async () => {
+  stopPredictionPolling();
   simulator.onStreamStopped();
   await window.streamApi.stop();
+});
+
+urlInput?.addEventListener('blur', () => {
+  const normalized = normalizeEndpointInput(urlInput.value);
+  urlInput.value = normalized;
+  setGatewayPresetValue(normalized);
+  if (predictionTargetInput) {
+    predictionTargetInput.value = alignPredictionTargetForStream(predictionTargetInput.value ? normalized : normalized, predictionTargetInput.value);
+  }
+  persistGatewayPresetInput();
+  persistEndpointInput();
+  persistPredictionTargetInput();
+});
+
+gatewayPresetSelect?.addEventListener('change', () => {
+  const preset = gatewayPresetSelect.value;
+  if (preset !== 'custom' && GATEWAY_PRESETS[preset]) {
+    const normalized = GATEWAY_PRESETS[preset];
+    urlInput.value = normalized;
+    if (predictionTargetInput) {
+      predictionTargetInput.value = alignPredictionTargetForStream(normalized, predictionTargetInput.value || '');
+    }
+  } else {
+    setGatewayPresetValue(urlInput?.value || '');
+  }
+  persistGatewayPresetInput();
+  persistEndpointInput();
+  persistPredictionTargetInput();
+});
+
+predictionTargetInput?.addEventListener('blur', () => {
+  const normalized = alignPredictionTargetForStream(urlInput?.value || '', predictionTargetInput.value);
+  predictionTargetInput.value = normalized;
+  persistPredictionTargetInput();
+});
+
+simPredictBtn?.addEventListener('click', () => {
+  void requestActiveSeriesPrediction(true);
 });
 
 simAutoStartBtn?.addEventListener('click', () => {
@@ -987,18 +1274,29 @@ simAutoStartBtn?.addEventListener('click', () => {
 });
 
 simAutoStopBtn?.addEventListener('click', () => {
+  stopPredictionPolling();
   simulator.stopAutoTradingSession('Auto trading stopped by user');
 });
 
 simModelSelect?.addEventListener('change', () => {
   predictionState.lastResult = null;
   predictionState.lastError = '';
+  predictionState.pending = false;
+  predictionState.pendingStartedAt = 0;
+  predictionState.lastRequestAt = 0;
+  predictionState.lastRequestedModelType = String(simModelSelect?.value || 'xgboost');
+  persistModelTypeInput();
   simulator.refreshStrategyUi();
+  if (predictionPollTimer) {
+    startPredictionPolling();
+  }
 });
 
 simConfigSelect?.addEventListener('change', () => {
   simulator.applyConfigProfile(simConfigSelect.value);
-  startPredictionPolling();
+  if (predictionPollTimer) {
+    startPredictionPolling();
+  }
 });
 
 simStrategySelect?.addEventListener('change', () => {
@@ -1006,10 +1304,16 @@ simStrategySelect?.addEventListener('change', () => {
 });
 
 simHoldMsInput?.addEventListener('change', () => {
-  startPredictionPolling();
+  syncPredictionHorizonInput();
+  if (predictionPollTimer) {
+    startPredictionPolling();
+  }
 });
 simHoldMsInput?.addEventListener('input', () => {
-  startPredictionPolling();
+  syncPredictionHorizonInput();
+  if (predictionPollTimer) {
+    startPredictionPolling();
+  }
 });
 
 simCapitalInput?.addEventListener('focus', () => {
@@ -1061,10 +1365,11 @@ addRowBtn.addEventListener('click', () => {
 
 subscriptionRows.appendChild(createSubscriptionRow({ symbol: 'BTC-USDT', channel: 'books' }));
 subscriptionRows.appendChild(createSubscriptionRow({ symbol: 'BTC-USDT', channel: 'trades' }));
+hydrateEndpointInput();
+syncPredictionHorizonInput();
 notifyChartSymbol('BTC-USDT');
 pickActiveGrpcSeriesKey(getSubscriptions());
 
 simulator.bootstrap();
 initGrpcCanvas();
-startPredictionPolling();
 startLoop();

@@ -3,7 +3,6 @@
 This setup defines three Docker Compose profiles:
 
 - `runtime`: `OKX WS -> C++ runtime backend -> Python local inference -> gateway`
-- `ui`: standalone browser frontend (`frontend/web`)
 - `training`: `OKX WS / historical data -> C++ collector backend -> dataset export -> Python training`
 
 The runtime profile includes 3 Level 2 services:
@@ -11,10 +10,6 @@ The runtime profile includes 3 Level 2 services:
 - `backend-cpp`: C++ market stream backend (gRPC on `50051`)
 - `inference-python`: Python inference server (gRPC on `50061`)
 - `web-gateway`: REST gateway (HTTP on `8080`) that forwards `/predict` to inference gRPC
-
-The `ui` profile adds:
-
-- `frontend-web`: browser-first operator UI (HTTP on `5173`)
 
 Runtime flow:
 
@@ -28,7 +23,6 @@ OKX WS
       -> receive prediction
       -> stream/risk output
   -> web-gateway (/predict)
-  -> frontend-web (optional)
 ```
 
 ## Files
@@ -36,44 +30,48 @@ OKX WS
 - `Dockerfile.backend-cpp`
 - `Dockerfile.inference-python`
 - `Dockerfile.web-gateway`
-- `Dockerfile.web-frontend`
 - `docker-compose.yml`
 - `gateway/server.js`
 
 ## Prerequisites
 
 - Docker Desktop / Docker Engine
-- Optional model artifact such as `../../models/pulse_lstm_v1.pt` or `../../models/pulse_xgboost_v1.joblib`
+- A model artifact such as `../../models/pulse_xgboost_v1.joblib`, `../../models/pulse_lstm_v1.pt`, or `../../models/pulse_best_model.artifact`
+
+For a local connectivity smoke test only, create a deterministic zero-return artifact:
+
+```bash
+cd /Volumes/Dev/Workspace/okx_trading_platform_sample
+python -m ml_pipeline.models.bootstrap_model --model-out models/pulse_xgboost_v1.joblib
+```
+
+Replace that smoke-test artifact with a trained model before production trading.
 
 ## Run Runtime Profile
 
+`--profile` must be followed by a profile name. `docker compose --profile up --build` is invalid; use `runtime` or `training`.
+
 ```bash
-cd /Volumes/Dev/Workspace/okx_trading_platform_sample/deploy/containers
-docker compose --profile runtime up --build
+cd /Volumes/Dev/Workspace/okx_trading_platform_sample
+docker compose -f deploy/containers/docker-compose.yml --profile runtime up --build
 ```
 
 Ports:
 
 - C++ backend: `127.0.0.1:50051`
-- Python inference: `127.0.0.1:50061`
+- Python inference (gRPC): `127.0.0.1:50061`
 - Web gateway: `127.0.0.1:8080`
-
-Run runtime + web UI together:
-
-```bash
-cd /Volumes/Dev/Workspace/okx_trading_platform_sample/deploy/containers
-docker compose --profile runtime --profile ui up --build
-```
-
-Additional port:
-
-- Web frontend: `127.0.0.1:5173`
 
 ## Health check (gateway)
 
 ```bash
 curl http://127.0.0.1:8080/health
 ```
+
+Expected local runtime targets:
+
+- `predTarget`: `inference-python:50061`
+- `marketTarget`: `backend-cpp:50051`
 
 ## Predict via gateway
 
@@ -96,7 +94,7 @@ curl -X POST http://127.0.0.1:8080/predict \
 ## Stop
 
 ```bash
-docker compose down
+docker compose -f deploy/containers/docker-compose.yml --profile runtime down
 ```
 
 ## Training Data Flow (Docker)
@@ -126,8 +124,8 @@ OKX WS / historical data
 ### Run the full training pipeline
 
 ```bash
-cd /Volumes/Dev/Workspace/okx_trading_platform_sample/deploy/containers
-docker compose --profile training up --build model-trainer
+cd /Volumes/Dev/Workspace/okx_trading_platform_sample
+docker compose -f deploy/containers/docker-compose.yml --profile training up --build model-trainer
 ```
 
 This starts the training chain in order:
@@ -166,7 +164,13 @@ Default feature input:
 
 `/app/data/books_trades_btcusdt.features.csv`
 
-Override defaults with `LABEL_HORIZON_SEC`, `LABEL_EPS`, and `TRAIN_DATASET_CSV`.
+Labels are built from executable PnL:
+
+- long candidate: buy current ask, sell future bid
+- short candidate: sell current bid, buy future ask
+- neutral: neither side beats `eps`, or the better side is not clearly positive
+
+Override defaults with `LABEL_HORIZON_SEC`, `LABEL_HORIZON_MS`, `LABEL_EPS`, and `TRAIN_DATASET_CSV`.
 Set `LABEL_SPREAD_EPS_MULTIPLIER` to control the dynamic neutral band; default is `0.3`, meaning `eps = 0.3 * spread` when spread is available.
 
 ### 3) Model trainer

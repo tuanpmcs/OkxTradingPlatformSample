@@ -67,6 +67,7 @@ frontend/electron/.npm/
 frontend/electron/dist/
 frontend/electron/.cache/
 frontend/electron/lovable-export/dist/
+output/
 
 # Python
 .venv/
@@ -84,15 +85,45 @@ __pycache__/
 ml_pipeline/.venv/
 ml_pipeline/ml_pipeline/.venv/
 ml_pipeline/_generated/
+ml_pipeline/serving/_generated/
 ml_pipeline/__pycache__/
 ml_pipeline/**/__pycache__/
 ml_pipeline/**/*.tmp
 
 # Data / model artifacts
-data/
-models/
+/data/
+/models/
 *.joblib
 *.pt
 *.pth
 *.onnx
 *.csv
+.env
+hft-keypair.pem
+
+# Local deployment scratch / generated artifacts
+/backend-cpp-taskdef.json
+/inference-python-taskdef.json
+/web-gateway-taskdef.json
+/deploy/containers/gateway/node_modules/
+/reports/aws_fargate_delivery/node_modules/
+/reports/aws_fargate_delivery/outputs/
+/tmp/
+/artifacts/
+/ml_pipeline/train_data/
+/docs/build/
+/docs/*.pdf
+/docs/*.svg
+
+# Submission / LaTeX packaging artifacts
+/submission/
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.nav
+*.snm
+*.synctex.gz
+*.toc
+*.vrb

@@ -6,6 +6,16 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV VCPKG_ROOT=/usr/local/vcpkg
 # VCPKG_BINARY_SOURCES is the modern way to control caching
 ENV VCPKG_BINARY_SOURCES="clear;files,/root/.cache/vcpkg/archives,readwrite"
+# The devcontainers base image can carry placeholder proxy env vars
+# (proxy.example.com), which breaks vcpkg/git fetches during Docker builds.
+ENV HTTP_PROXY="" \
+    HTTPS_PROXY="" \
+    ALL_PROXY="" \
+    NO_PROXY="backend-cpp,inference-python,localhost,127.0.0.1" \
+    http_proxy="" \
+    https_proxy="" \
+    all_proxy="" \
+    no_proxy="backend-cpp,inference-python,localhost,127.0.0.1"
 
 WORKDIR /app
 ARG TARGETARCH
@@ -14,7 +24,10 @@ ARG VCPKG_MAX_CONCURRENCY=1
 
 # 1. Reinstall CMake if requested
 COPY deploy/containers/reinstall-cmake.sh /tmp/reinstall-cmake.sh
-RUN if [ "${REINSTALL_CMAKE_VERSION_FROM_SOURCE}" != "none" ]; then \
+RUN unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy \
+    && git config --global --unset http.proxy 2>/dev/null || true \
+    && git config --global --unset https.proxy 2>/dev/null || true \
+    && if [ "${REINSTALL_CMAKE_VERSION_FROM_SOURCE}" != "none" ]; then \
         chmod +x /tmp/reinstall-cmake.sh && /tmp/reinstall-cmake.sh "${REINSTALL_CMAKE_VERSION_FROM_SOURCE}"; \
     fi && rm -f /tmp/reinstall-cmake.sh
 
@@ -29,7 +42,10 @@ COPY backend ./backend
 RUN --mount=type=cache,target=/usr/local/vcpkg/downloads \
     --mount=type=cache,id=cmake-build-${TARGETARCH},target=/app/build \
     --mount=type=cache,id=vcpkg-archives-${TARGETARCH},target=/root/.cache/vcpkg/archives \
-    case "${TARGETARCH}" in \
+    unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy \
+    && git config --global --unset http.proxy 2>/dev/null || true \
+    && git config --global --unset https.proxy 2>/dev/null || true \
+    && case "${TARGETARCH}" in \
         arm64) CONFIG_PRESET="arm64-linux-dynamic-rel" ;; \
         amd64|x64) CONFIG_PRESET="x64-linux-dynamic-rel" ;; \
         *) exit 1 ;; \
@@ -60,7 +76,17 @@ RUN --mount=type=cache,id=cmake-build-${TARGETARCH},target=/app/build \
 # STAGE 2: Lightweight Production Image
 FROM ubuntu:24.04 AS runtime
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+ENV HTTP_PROXY="" \
+    HTTPS_PROXY="" \
+    ALL_PROXY="" \
+    NO_PROXY="backend-cpp,inference-python,localhost,127.0.0.1" \
+    http_proxy="" \
+    https_proxy="" \
+    all_proxy="" \
+    no_proxy="backend-cpp,inference-python,localhost,127.0.0.1"
+
+RUN unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy \
+    && apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libstdc++6 \
     && rm -rf /var/lib/apt/lists/*

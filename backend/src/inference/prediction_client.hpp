@@ -22,11 +22,12 @@ struct InferenceRuntimeConfig
 	std::string	  grpc_target{"127.0.0.1:50061"};
 	std::string	  model_type{"xgboost"};
 	std::string	  onnx_model_path{};
-	int			  horizon_sec{30};
+	int			  horizon_sec{1};
 	int			  timeout_ms{1200};
 	int			  interval_ms{200};
 	std::size_t	  min_points{32};
 	std::size_t	  max_points{256};
+	bool		  stream_predictions_enabled{false};
 };
 
 struct PredictionResult

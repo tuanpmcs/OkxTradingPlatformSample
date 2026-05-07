@@ -22,7 +22,7 @@ struct AppConfig
 	std::string predict_target{"127.0.0.1:50061"};
 	std::string symbol{"BTC-USDT"};
 	std::string channel{"books5"};
-	int			horizon_sec{30};
+	int			horizon_sec{1};
 	int			timeout_ms{25};
 	std::size_t min_points{32};
 	std::size_t max_points{256};

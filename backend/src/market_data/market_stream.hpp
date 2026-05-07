@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <deque>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -83,12 +84,19 @@ private:
 		double		 signed_size{0.0};
 	};
 
+	struct BookState
+	{
+		std::map<double, double, std::greater<double>> bids;
+		std::map<double, double> asks;
+	};
+
 private:
 	std::int64_t		  _trade_window_ms{5000};
 	std::optional<double> _bid_px;
 	std::optional<double> _ask_px;
 	std::optional<double> _bid_sz;
 	std::optional<double> _ask_sz;
+	std::map<std::string, BookState> _books_by_inst;
 	std::deque<TradeSample> _trades;
 };
 

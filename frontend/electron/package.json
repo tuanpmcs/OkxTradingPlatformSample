@@ -1,22 +1,73 @@
 {
   "name": "okx-stream-desktop",
   "version": "1.0.0",
-  "description": "Lovable Electron app for live stream chart changes",
+  "description": "Cross-platform desktop app for OKX stream monitoring and trading simulation",
   "main": "main.js",
   "scripts": {
     "build:chart": "esbuild chart-widget-src.jsx --bundle --format=iife --outfile=chart-widget.js",
-    "start": "env -u ELECTRON_RUN_AS_NODE electron .",
-    "start:lovable": "env -u ELECTRON_RUN_AS_NODE PULSE_UI_PATH=./lovable-export/dist/index.html electron ."
+    "start": "node ./scripts/run-electron.js",
+    "start:lovable": "node ./scripts/run-electron.js --ui=./lovable-export/dist/index.html",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win"
+  },
+  "build": {
+    "appId": "com.okxtradingplatform.pulsedesk",
+    "productName": "Pulse Desk",
+    "asar": true,
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer.js",
+      "simulator.js",
+      "chart-widget.js",
+      "chart-widget-src.jsx",
+      "index.html",
+      "styles.css",
+      "lovable-export/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "proto",
+        "to": "proto"
+      }
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.finance"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.12.4",
     "@grpc/proto-loader": "^0.7.13",
     "chart.js": "^4.4.3",
-    "electron": "^41.2.1",
     "esbuild": "^0.28.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-ts-tradingview-widgets": "^1.2.8",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "^41.2.1",
+    "electron-builder": "^26.0.12"
   }
 }

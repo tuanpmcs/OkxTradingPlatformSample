@@ -1,0 +1,90 @@
+PROJECT_NAME           = "OKX Trading Platform Sample"
+PROJECT_NUMBER         = "0.2.0"
+PROJECT_BRIEF          = "C++ runtime, Python ML pipeline, deployment assets, and project documentation."
+
+OUTPUT_DIRECTORY       = docs/build
+CREATE_SUBDIRS         = NO
+ALLOW_UNICODE_NAMES    = YES
+
+OUTPUT_LANGUAGE        = English
+BRIEF_MEMBER_DESC      = YES
+REPEAT_BRIEF           = YES
+ALWAYS_DETAILED_SEC    = NO
+INLINE_INHERITED_MEMB  = NO
+FULL_PATH_NAMES        = NO
+STRIP_FROM_PATH        = .
+
+MARKDOWN_SUPPORT       = YES
+TOC_INCLUDE_HEADINGS   = 3
+AUTOLINK_SUPPORT       = YES
+USE_MDFILE_AS_MAINPAGE = docs/mainpage.md
+IMAGE_PATH             = docs reports reports/diagrams
+
+INPUT                  = \
+  README.md \
+  backend \
+  deploy \
+  docs \
+  reports \
+  ml_pipeline \
+  tests
+
+FILE_PATTERNS          = *.h *.hpp *.c *.cc *.cpp *.md *.proto *.py
+RECURSIVE              = YES
+
+EXCLUDE                = \
+  docs/build \
+  frontend/electron/package-lock.json \
+  frontend/package-lock.json
+
+EXCLUDE_PATTERNS       = \
+  */__pycache__/* \
+  */.venv/* \
+  */node_modules/* \
+  */build/* \
+  */dist/* \
+  */.git/* \
+  */*.ipynb \
+  */chart-widget.js
+
+FILE_PATTERNS          = *.h *.hpp *.cpp *.md *.proto
+RECURSIVE              = YES
+
+# Output
+GENERATE_HTML          = YES
+HTML_COLORSTYLE        = LIGHT
+GENERATE_LATEX         = NO
+GENERATE_TREEVIEW      = YES
+FULL_PATH_NAMES        = NO
+
+# Extract
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = YES
+EXTRACT_STATIC         = YES
+SHOW_NAMESPACES        = YES
+SHOW_FILES             = YES
+
+# Markdown
+MARKDOWN_SUPPORT       = YES
+
+# Diagrams (Graphviz)
+// Source - https://stackoverflow.com/a/38322858
+// Posted by Malcolm Jones, modified by community. See post 'Timeline' for change history
+// Retrieved 2026-03-04, License - CC BY-SA 4.0
+EXTRACT_ALL          = YES
+CLASS_DIAGRAMS      = YES
+HIDE_UNDOC_RELATIONS = NO
+HAVE_DOT             = YES
+CLASS_GRAPH          = YES
+COLLABORATION_GRAPH  = YES
+UML_LOOK             = YES
+UML_LIMIT_NUM_FIELDS = 50
+TEMPLATE_RELATIONS   = YES
+DOT_GRAPH_MAX_NODES  = 100
+MAX_DOT_GRAPH_DEPTH  = 0
+DOT_TRANSPARENT      = YES
+DOT_IMAGE_FORMAT = svg
+
+EXTENSION_MAPPING = tsx=JavaScript
+EXTENSION_MAPPING = ts=JavaScript
+

@@ -69,11 +69,31 @@
     return 'HOLD';
   }
 
+  function pickNumber(...values) {
+    for (const value of values) {
+      const n = Number(value);
+      if (Number.isFinite(n)) return n;
+    }
+    return NaN;
+  }
+
+  function predictionLastPrice(prediction) {
+    return pickNumber(prediction?.lastPrice, prediction?.last_price);
+  }
+
+  function predictionPrice(prediction) {
+    return pickNumber(prediction?.predictedPrice, prediction?.predicted_price);
+  }
+
   function predictionSignedReturn(prediction) {
-    const direct = Number(prediction?.score);
+    const direct = pickNumber(
+      prediction?.predictedReturn,
+      prediction?.predicted_return,
+      prediction?.score
+    );
     if (Number.isFinite(direct)) return direct;
-    const last = Number(prediction?.lastPrice);
-    const pred = Number(prediction?.predictedPrice);
+    const last = predictionLastPrice(prediction);
+    const pred = predictionPrice(prediction);
     if (Number.isFinite(last) && last > 0 && Number.isFinite(pred)) {
       return (pred - last) / last;
     }
@@ -99,10 +119,38 @@
     return raw.length > 140 ? `${raw.slice(0, 137)}...` : raw;
   }
 
+  function formatReturnBps(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '-';
+    const bps = n * 10000;
+    const sign = bps >= 0 ? '+' : '';
+    const rawSign = n >= 0 ? '+' : '';
+    return `${sign}${bps.toFixed(4)} bps (${rawSign}${n.toFixed(8)})`;
+  }
+
+  function formatModelLabel(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'xgboost' || normalized === 'xgb') return 'XGBoost';
+    if (normalized === 'lightgbm' || normalized === 'lgbm') return 'LightGBM';
+    return value ? String(value) : 'Unknown';
+  }
+
+  function formatRatio(value, digits = 5) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '-';
+    return n.toFixed(digits);
+  }
+
+  function formatBpsValue(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '-';
+    return `${n.toFixed(2)} bps`;
+  }
+
   const EXECUTION_COST = {
-    feeBpsPerSide: 2.0,
-    slippageBpsPerSide: 0.8,
-    spreadImpactRatio: 0.5,
+    feeBpsPerSide: 0.0,
+    slippageBpsPerSide: 0.0,
+    spreadImpactRatio: 0.0,
     fallbackSpreadBps: 1.0
   };
 
@@ -151,6 +199,27 @@
       exitFee,
       totalFee: entryFee + exitFee,
       net
+    };
+  }
+
+  function computeExpectedPnlFromExecutableReturn(side, capital, predRet) {
+    const signed = Number(predRet);
+    const notional = Number(capital);
+    if (!Number.isFinite(signed) || !Number.isFinite(notional) || notional <= 0) {
+      return { gross: 0, entryFee: 0, exitFee: 0, totalFee: 0, net: 0 };
+    }
+    const directionalRet = side === 'SHORT' ? -signed : signed;
+    const gross = notional * directionalRet;
+    const feeRatio = bpsToRatio(EXECUTION_COST.feeBpsPerSide);
+    const entryFee = notional * feeRatio;
+    const exitFee = Math.max(0, notional + gross) * feeRatio;
+    const totalFee = entryFee + exitFee;
+    return {
+      gross,
+      entryFee,
+      exitFee,
+      totalFee,
+      net: gross - totalFee
     };
   }
 
@@ -232,7 +301,7 @@
         profile: profileKey,
         strategy: String(elements.simStrategySelect?.value || profile.strategy),
         holdMs: Math.max(50, Math.round(parsePositiveNumber(elements.simHoldMsInput, profile.holdMs))),
-        horizonSec: Math.max(1, Math.round(asNumber(elements.simHorizonInput?.value, profile.horizonSec))),
+        horizonMs: Math.max(50, Math.round(asNumber(elements.simHorizonInput?.value, profile.horizonMs || profile.holdMs))),
         rangeSec: Math.max(10, Math.round(asNumber(elements.simRangeInput?.value, profile.autoRangeSec))),
         imbalanceThreshold: parsePositiveNumber(elements.simImbalanceInput, profile.imbalanceThreshold),
         adverseThreshold,
@@ -247,12 +316,20 @@
       const cfg = readStrategyConfig();
       const profile = configProfiles[cfg.profile] || configProfiles.market_maker;
       const isMM = cfg.strategy === 'market_making';
+      const lastPrediction = callbacks.getLastPrediction ? callbacks.getLastPrediction() : null;
+      const lastError = callbacks.getPredictionError ? callbacks.getPredictionError() : '';
+      const requestedModel = callbacks.getLastRequestedModelType
+        ? callbacks.getLastRequestedModelType()
+        : cfg.modelType;
+      const runtimeModel = lastPrediction?.modelName || '';
 
       if (elements.simModelBadge) {
-        elements.simModelBadge.textContent = `Model: ${modelOptions[cfg.modelType] || cfg.modelType}`;
+        const requestedLabel = modelOptions[cfg.modelType] || formatModelLabel(requestedModel);
+        const runtimeLabel = runtimeModel || (lastError ? 'Fallback / unavailable' : 'Waiting');
+        elements.simModelBadge.textContent = `Requested: ${requestedLabel} | Runtime: ${runtimeLabel}`;
       }
       if (elements.simModeBadge) {
-        elements.simModeBadge.textContent = `Mode: ${profile.label}`;
+        elements.simModeBadge.textContent = `Mode: ${profile.label}${lastError ? ' | Source: fallback' : runtimeModel ? ' | Source: server' : ''}`;
       }
       if (elements.simRuleHint) {
         elements.simRuleHint.textContent = isMM
@@ -264,8 +341,30 @@
       if (elements.simAdverseTitle) {
         elements.simAdverseTitle.textContent = isMM ? 'Adverse Filter' : 'Model Confirm Threshold';
       }
+      if (elements.simAdverseHelp) {
+        elements.simAdverseHelp.textContent = isMM
+          ? 'Skip quotes when predicted return magnitude is too directional.'
+          : 'Minimum model edge before alpha entries are allowed.';
+      }
       elements.simMinSpreadWrap?.classList.toggle('input-muted', !isMM);
       elements.simAdverseWrap?.classList.toggle('input-muted', false);
+      if (elements.simMmOneSidedValue) {
+        elements.simMmOneSidedValue.textContent = formatRatio(cfg.imbalanceThreshold, 3);
+      }
+      if (elements.simAlphaConfirmValue) {
+        elements.simAlphaConfirmValue.textContent = formatRatio(cfg.alphaPredRetThreshold, 8);
+      }
+      if (elements.simMaxEntrySpreadValue) {
+        elements.simMaxEntrySpreadValue.textContent = formatBpsValue(cfg.maxEntrySpreadBps);
+      }
+      if (elements.simAlphaCooldownValue) {
+        elements.simAlphaCooldownValue.textContent = `${Math.round(cfg.alphaCooldownMs)} ms`;
+      }
+      if (elements.simDecisionBasis) {
+        elements.simDecisionBasis.textContent = isMM
+          ? `MM quotes only when spread stays above ${formatBpsValue(cfg.minSpreadBps)}, imbalance stays inside ${formatRatio(cfg.imbalanceThreshold, 3)}, and |pred_ret| stays below ${formatRatio(cfg.adverseThreshold, 8)}.`
+          : `Alpha entries require |pred_ret| above ${formatRatio(cfg.alphaPredRetThreshold, 8)}, spread below ${formatBpsValue(cfg.maxEntrySpreadBps)}, and respect a ${Math.round(cfg.alphaCooldownMs)} ms cooldown.`;
+      }
     }
 
     function refreshAutoBadge() {
@@ -281,7 +380,7 @@
       if (elements.simStrategySelect) elements.simStrategySelect.value = profile.strategy;
       if (elements.simCapitalInput) elements.simCapitalInput.value = profile.capital;
       if (elements.simHoldMsInput) elements.simHoldMsInput.value = String(profile.holdMs);
-      if (elements.simHorizonInput) elements.simHorizonInput.value = String(profile.horizonSec);
+      if (elements.simHorizonInput) elements.simHorizonInput.value = String(profile.horizonMs || profile.holdMs);
       if (elements.simRangeInput) elements.simRangeInput.value = String(profile.autoRangeSec);
       if (elements.simImbalanceInput) elements.simImbalanceInput.value = String(profile.imbalanceThreshold);
       if (elements.simAdverseInput) elements.simAdverseInput.value = String(profile.adverseThreshold);
@@ -375,12 +474,9 @@
     }
 
     function deriveAutoEntryDecision(baseDecision, prediction, point) {
-      if (baseDecision && baseDecision.action !== 'HOLD') {
-        return baseDecision;
-      }
-
       const cfg = readStrategyConfig();
-      const action = predictionAction(prediction);
+      const baseAction = normalizeDecisionAction(baseDecision?.action);
+      const action = baseAction !== 'HOLD' ? baseAction : predictionAction(prediction);
       const predRet = predictionSignedReturn(prediction);
       const absRet = Math.abs(predRet);
       const book = parseBookStatsFromPoint(point);
@@ -390,15 +486,21 @@
 
       const threshold = cfg.alphaPredRetThreshold;
       if (action === 'HOLD' || absRet < threshold) {
-        return { action: 'HOLD', reason: `Auto wait: |pred_ret| ${absRet.toFixed(5)} < ${threshold.toFixed(5)}` };
+        return { action: 'HOLD', reason: `Auto wait: |pred_ret| ${absRet.toFixed(8)} < ${threshold.toFixed(8)}` };
+      }
+      const capital = parseCapitalInput() || 0;
+      const expected = computeExpectedPnlFromExecutableReturn(action, capital, predRet);
+      if (expected.net <= 0) {
+        return { action: 'HOLD', reason: `Auto wait: net edge ${formatUsdSigned(expected.net)} <= $0` };
       }
 
       const reason = predictionReasonText(prediction);
+      const sourceReason = baseDecision?.reason || reason;
       return {
         action,
-        reason: reason
-          ? `Auto entry by prediction ${action} (${predRet.toFixed(5)}) | ${reason}`
-          : `Auto entry by prediction ${action} (${predRet.toFixed(5)})`
+        reason: sourceReason
+          ? `Auto entry ${action} (${formatReturnBps(predRet)}, net ${formatUsdSigned(expected.net)}) | ${sourceReason}`
+          : `Auto entry by prediction ${action} (${formatReturnBps(predRet)}, net ${formatUsdSigned(expected.net)})`
       };
     }
 
@@ -430,7 +532,7 @@
           return { action: 'HOLD', reason: `Spread ${book.spreadBps.toFixed(2)}bps below min` };
         }
         if (absPredRet >= cfg.adverseThreshold) {
-          return { action: 'HOLD', reason: `Adverse filter hit (|pred_ret|=${absPredRet.toFixed(5)})` };
+          return { action: 'HOLD', reason: `Adverse filter hit (|pred_ret|=${absPredRet.toFixed(8)})` };
         }
         if (book && book.imbalance >= cfg.imbalanceThreshold) {
           return { action: 'SHORT', reason: `MM one-sided risk (imb=${book.imbalance.toFixed(2)})` };
@@ -441,7 +543,7 @@
         if (absPredRet >= cfg.alphaPredRetThreshold) {
           return {
             action: predRet > 0 ? 'LONG' : 'SHORT',
-            reason: `MM prediction drift (${predRet.toFixed(5)})`
+            reason: `MM prediction drift (${predRet.toFixed(8)})`
           };
         }
         return { action: 'HOLD', reason: 'MM neutral conditions' };
@@ -453,12 +555,12 @@
       if (absPredRet < cfg.alphaPredRetThreshold) {
         return {
           action: 'HOLD',
-          reason: `Prediction weak (|pred_ret|=${absPredRet.toFixed(5)} < ${cfg.alphaPredRetThreshold.toFixed(5)})`
+          reason: `Prediction weak (|pred_ret|=${absPredRet.toFixed(8)} < ${cfg.alphaPredRetThreshold.toFixed(8)})`
         };
       }
       return {
         action: predRet > 0 ? 'LONG' : 'SHORT',
-        reason: `Alpha by predicted return (${predRet.toFixed(5)})`
+        reason: `Alpha by predicted return (${predRet.toFixed(8)})`
       };
     }
 
@@ -479,18 +581,24 @@
       }
 
       const action = normalizeDecisionAction(side);
+      const lastPrice = predictionLastPrice(pred);
+      const predPrice = predictionPrice(pred);
+      const predRet = predictionSignedReturn(pred);
       const activeSeries = callbacks.getSeriesByKey(seriesKey || callbacks.getActiveSeriesKey());
       const latestPoint = Array.isArray(activeSeries) && activeSeries.length > 0
         ? activeSeries[activeSeries.length - 1]
         : null;
-      const entryExecPrice = estimateExecutionPrice(action, 'entry', latestPoint, pred.lastPrice);
+      const entryExecPrice = estimateExecutionPrice(action, 'entry', latestPoint, lastPrice);
       if (!Number.isFinite(entryExecPrice) || entryExecPrice <= 0) {
         elements.simSummary.textContent = 'Cannot open position: invalid entry price.';
         return false;
       }
       const qty = capital / entryExecPrice;
-      const exitForExpected = estimateExecutionPrice(action, 'exit', latestPoint, pred.predictedPrice);
-      const expected = computeNetPnl(action, qty, entryExecPrice, Number.isFinite(exitForExpected) ? exitForExpected : pred.predictedPrice);
+      const expected = computeExpectedPnlFromExecutableReturn(action, capital, predRet);
+      if (mode === 'auto' && expected.net <= 0) {
+        elements.simSummary.textContent = `Auto skipped: expected net edge ${formatUsdSigned(expected.net)} is not positive.`;
+        return false;
+      }
       const cfg = readStrategyConfig();
 
       state.position.open = true;
@@ -500,8 +608,9 @@
       state.position.capital = capital;
       state.position.qty = qty;
       state.position.entryExecPrice = entryExecPrice;
-      state.position.entryPrice = pred.lastPrice;
-      state.position.predictedPrice = pred.predictedPrice;
+      state.position.entryPrice = lastPrice;
+      state.position.predictedPrice = predPrice;
+      state.position.predictedReturn = predRet;
       state.position.expectedPnl = expected.net;
       state.position.openedAt = Date.now();
       state.position.holdMs = cfg.holdMs;
@@ -514,9 +623,9 @@
         state.auto.lastEntryTs = Date.now();
       }
 
-      renderAccountStats(latestPoint, pred.lastPrice);
+      renderAccountStats(latestPoint, lastPrice);
       const reason = reasonText ? ` | Reason: ${reasonText}` : '';
-      elements.simSummary.textContent = `${action} opened on ${state.position.seriesKey} with ${formatUsd(capital)} | Mid: ${pred.lastPrice.toFixed(2)} | Exec: ${entryExecPrice.toFixed(2)} | Predicted: ${pred.predictedPrice.toFixed(2)} | Hold: ${state.position.holdMs}ms${reason}`;
+      elements.simSummary.textContent = `${action} opened on ${state.position.seriesKey} with ${formatUsd(capital)} | Mid: ${lastPrice.toFixed(2)} | Exec: ${entryExecPrice.toFixed(2)} | Predicted: ${predPrice.toFixed(2)} | Return: ${formatReturnBps(predRet)} | Expected: ${formatUsdSigned(expected.net)} | Hold: ${state.position.holdMs}ms${reason}`;
       return true;
     }
 
@@ -571,24 +680,28 @@
 
         let shouldHold = false;
         if (!isAlpha && pred && Number.isFinite(currentPrice)) {
+          const predPrice = predictionPrice(pred);
           shouldHold = state.position.side === 'SHORT'
-            ? pred.predictedPrice < currentPrice
-            : pred.predictedPrice > currentPrice;
+            ? predPrice < currentPrice
+            : predPrice > currentPrice;
         }
 
         if (shouldHold) {
+          const predPrice = predictionPrice(pred);
+          const predRet = predictionSignedReturn(pred);
           state.position.openedAt = Date.now();
-          state.position.predictedPrice = pred.predictedPrice;
-          const expectedExit = estimateExecutionPrice(state.position.side, 'exit', lastPoint, pred.predictedPrice);
+          state.position.predictedPrice = predPrice;
+          state.position.predictedReturn = predRet;
+          const expectedExit = estimateExecutionPrice(state.position.side, 'exit', lastPoint, predPrice);
           const expected = computeNetPnl(
             state.position.side,
             state.position.qty,
             state.position.entryExecPrice || state.position.entryPrice,
-            Number.isFinite(expectedExit) ? expectedExit : pred.predictedPrice
+            Number.isFinite(expectedExit) ? expectedExit : predPrice
           );
           state.position.expectedPnl = expected.net;
           state.position.holdCycles += 1;
-          elements.simSummary.textContent = `Hold window reached -> EXTEND (${state.position.holdCycles}) | Side: ${state.position.side} | Predicted: ${pred.predictedPrice.toFixed(2)}`;
+          elements.simSummary.textContent = `Hold window reached -> EXTEND (${state.position.holdCycles}) | Side: ${state.position.side} | Predicted: ${predPrice.toFixed(2)} | Return: ${formatReturnBps(predRet)} | Expected: ${formatUsdSigned(expected.net)}`;
           return;
         }
 
@@ -652,6 +765,9 @@
       refreshAutoBadge();
       const profile = configProfiles[cfg.profile] || configProfiles.market_maker;
       elements.simSummary.textContent = `Auto trading started for ${cfg.rangeSec}s | Config: ${profile.label} | Model: ${modelOptions[cfg.modelType] || cfg.modelType} | Hold: ${cfg.holdMs}ms`;
+      if (typeof callbacks.onAutoTradingChange === 'function') {
+        callbacks.onAutoTradingChange(true);
+      }
     }
 
     function stopAutoTradingSession(reason = 'Auto trading stopped') {
@@ -666,6 +782,9 @@
         ? ((state.auto.wins / state.auto.trades) * 100).toFixed(1)
         : '0.0';
       elements.simSummary.textContent = `${reason}. Trades: ${state.auto.trades} | Total Profit: ${formatUsdSigned(state.auto.totalPnl)} | Win rate: ${winRate}%`;
+      if (typeof callbacks.onAutoTradingChange === 'function') {
+        callbacks.onAutoTradingChange(false);
+      }
     }
 
     async function update(series, activeSeriesKey) {
@@ -674,8 +793,6 @@
         return;
       }
 
-      // Keep UI updates non-blocking; fire prediction request in background.
-      callbacks.requestPrediction(series, false).catch(() => {});
       const prediction = callbacks.getLastPrediction();
       const predictionError = callbacks.getPredictionError();
 
@@ -686,6 +803,10 @@
         elements.simPredPrice.textContent = Number.isFinite(latestPrice)
           ? `$${latestPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
           : '-';
+        if (elements.simPredRet) {
+          elements.simPredRet.textContent = formatReturnBps(0);
+          setPnlColor(elements.simPredRet, 0);
+        }
         elements.simExpPnl.textContent = formatUsdSigned(0);
         setPnlColor(elements.simExpPnl, 0);
         elements.simLivePnl.textContent = formatUsdSigned(0);
@@ -703,36 +824,32 @@
 
       const latest = series[series.length - 1];
       const decision = decideTradeByStrategy(prediction, latest);
-      const serverAction = normalizeDecisionAction(prediction?.signal);
+      const displayAction = state.auto.running && !state.position.open
+        ? deriveAutoEntryDecision(decision, prediction, latest).action
+        : decision.action;
       const capitalPreview = parseCapitalInput() || 5000;
       let expectedPreview = 0;
+      const lastPrice = predictionLastPrice(prediction);
+      const predPrice = predictionPrice(prediction);
+      const predRet = predictionSignedReturn(prediction);
       if (state.position.open) {
-        const holdExit = estimateExecutionPrice(state.position.side, 'exit', latest, prediction.predictedPrice);
-        if (Number.isFinite(holdExit)) {
-          expectedPreview = computeNetPnl(
-            state.position.side,
-            state.position.qty,
-            state.position.entryExecPrice || state.position.entryPrice,
-            holdExit
-          ).net;
-        }
-      } else if (serverAction !== 'HOLD') {
-        const previewEntry = estimateExecutionPrice(serverAction, 'entry', latest, prediction.lastPrice);
-        const previewExit = estimateExecutionPrice(serverAction, 'exit', latest, prediction.predictedPrice);
-        const qtyPreview =
-          capitalPreview > 0 && Number.isFinite(previewEntry) && previewEntry > 0
-            ? capitalPreview / previewEntry
-            : 0;
-        if (Number.isFinite(previewEntry) && Number.isFinite(previewExit) && qtyPreview > 0) {
-          expectedPreview = computeNetPnl(serverAction, qtyPreview, previewEntry, previewExit).net;
-        }
+        expectedPreview = computeExpectedPnlFromExecutableReturn(
+          state.position.side,
+          state.position.capital,
+          predRet
+        ).net;
+      } else if (displayAction !== 'HOLD') {
+        expectedPreview = computeExpectedPnlFromExecutableReturn(displayAction, capitalPreview, predRet).net;
       }
 
-      elements.simSignal.textContent = serverAction;
-      const predPrice = Number(prediction.predictedPrice);
+      elements.simSignal.textContent = displayAction;
       elements.simPredPrice.textContent = Number.isFinite(predPrice)
         ? `$${predPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
         : '-';
+      if (elements.simPredRet) {
+        elements.simPredRet.textContent = formatReturnBps(predRet);
+        setPnlColor(elements.simPredRet, predRet);
+      }
       elements.simExpPnl.textContent = formatUsdSigned(expectedPreview);
       setPnlColor(elements.simExpPnl, expectedPreview);
 
@@ -746,8 +863,8 @@
           elements.simSummary.textContent = `Model ${prediction.modelName || 'PredictionService'} on ${activeSeriesKey || '-'}: ${decision.action} | ${decision.reason}`;
         }
 
-        renderAccountStats(latest, prediction.lastPrice);
-        updateSessionProfitFromEquity(latest, prediction.lastPrice);
+        renderAccountStats(latest, lastPrice);
+        updateSessionProfitFromEquity(latest, lastPrice);
 
         if (state.auto.running) {
           const now = Date.now();

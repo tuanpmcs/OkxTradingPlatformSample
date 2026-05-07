@@ -153,6 +153,7 @@ void CsvTickWriter::write(const StreamRecord& tick)
          << csv_escape(infer_event_type(getv("channel"))) << ','
          << csv_escape(getv("channel")) << ','
          << csv_escape(getv("instId")) << ','
+         << csv_escape(getv("book_action")) << ','
          << csv_escape(getv("side")) << ','
          << csv_escape(getv("sz")) << ','
          << csv_escape(getv("bidPx")) << ','
@@ -181,7 +182,7 @@ std::string CsvTickWriter::infer_event_type(const std::string& channel)
 
 void CsvTickWriter::write_header()
 {
-    _out << "ts,price,event_type,channel,instId,trade_side,trade_size,bidPx,askPx,bidSz,askSz,"
+    _out << "ts,price,event_type,channel,instId,book_action,trade_side,trade_size,bidPx,askPx,bidSz,askSz,"
             "spread,mid_price,mid_price_feat,spread_feat,imbalance_feat,trade_volume_feat,"
             "trade_imbalance_feat,source\n";
     _out.flush();
@@ -194,12 +195,55 @@ FeatureAccumulator::FeatureAccumulator(std::int64_t trade_window_ms)
 
 void FeatureAccumulator::observe_books(const Books& books)
 {
-    if (!books.bids.empty() && !books.asks.empty())
+    auto& state = _books_by_inst[books.instrument_id];
+    if (books.action == "snapshot" || (state.bids.empty() && state.asks.empty()))
     {
-        _bid_px = decimal_to_double(books.bids.front().price);
-        _ask_px = decimal_to_double(books.asks.front().price);
-        _bid_sz = decimal_to_double(books.bids.front().quantity);
-        _ask_sz = decimal_to_double(books.asks.front().quantity);
+        state.bids.clear();
+        state.asks.clear();
+    }
+
+    for (const auto& level : books.bids)
+    {
+        const auto px = decimal_to_double(level.price);
+        const auto sz = decimal_to_double(level.quantity);
+        if (!(px > 0.0))
+        {
+            continue;
+        }
+        if (sz <= 0.0)
+        {
+            state.bids.erase(px);
+        }
+        else
+        {
+            state.bids[px] = sz;
+        }
+    }
+
+    for (const auto& level : books.asks)
+    {
+        const auto px = decimal_to_double(level.price);
+        const auto sz = decimal_to_double(level.quantity);
+        if (!(px > 0.0))
+        {
+            continue;
+        }
+        if (sz <= 0.0)
+        {
+            state.asks.erase(px);
+        }
+        else
+        {
+            state.asks[px] = sz;
+        }
+    }
+
+    if (!state.bids.empty() && !state.asks.empty())
+    {
+        _bid_px = state.bids.begin()->first;
+        _bid_sz = state.bids.begin()->second;
+        _ask_px = state.asks.begin()->first;
+        _ask_sz = state.asks.begin()->second;
     }
 }
 
@@ -281,6 +325,7 @@ StreamRecord make_stream_record_from_books(const Books& books,
     record.raw_json = raw_json;
     record.fields["channel"] = channel;
     record.fields["instId"] = books.instrument_id;
+    record.fields["book_action"] = books.action;
     record.fields["ts"] = std::to_string(books.exchange_ts_ms);
     record.fields["seqId"] = std::to_string(books.sequence_id);
 

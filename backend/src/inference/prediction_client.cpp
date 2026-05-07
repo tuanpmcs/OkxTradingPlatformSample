@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cmath>
 #include <iomanip>
 #include <sstream>
@@ -30,6 +31,32 @@ double fallback_price_from_point(const marketstream::PricePoint& point)
 double clamp_abs(double value, double bound)
 {
 	return std::max(-bound, std::min(bound, value));
+}
+
+void scrub_grpc_proxy_env()
+{
+	const char* proxy_keys[] = {
+		"GRPC_PROXY",
+		"grpc_proxy",
+		"HTTPS_PROXY",
+		"https_proxy",
+		"HTTP_PROXY",
+		"http_proxy",
+		"ALL_PROXY",
+		"all_proxy",
+	};
+	for (const auto* key : proxy_keys)
+	{
+		unsetenv(key);
+	}
+}
+
+std::shared_ptr<grpc::Channel> create_internal_grpc_channel(const std::string& target)
+{
+	scrub_grpc_proxy_env();
+	grpc::ChannelArguments args;
+	args.SetInt("grpc.enable_http_proxy", 0);
+	return grpc::CreateCustomChannel(target, grpc::InsecureChannelCredentials(), args);
 }
 
 std::optional<PredictionResult> build_linear_fallback(const std::deque<marketstream::PricePoint>& points,
@@ -154,7 +181,7 @@ class GrpcPredictionClient final : public PredictionClient
 public:
 	explicit GrpcPredictionClient(InferenceRuntimeConfig cfg)
 		: _cfg(std::move(cfg))
-		, _channel(grpc::CreateChannel(_cfg.grpc_target, grpc::InsecureChannelCredentials()))
+		, _channel(create_internal_grpc_channel(_cfg.grpc_target))
 		, _stub(marketstream::PredictionService::NewStub(_channel))
 	{
 	}

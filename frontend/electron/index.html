@@ -33,9 +33,31 @@
           <div id="subscription-rows" class="subscription-rows"></div>
         </div>
         <label>
+          Gateway
+          <select id="gateway-preset-select">
+            <option value="custom">Custom</option>
+            <option value="local">Local</option>
+            <option value="aws-ec2">AWS EC2</option>
+            <option value="aws-fargate">AWS Fargate</option>
+          </select>
+        </label>
+        <label>
           URL
           <input id="url-input" value="grpc://127.0.0.1:50051" />
         </label>
+        <label>
+          Prediction Target
+          <input id="prediction-target-input" value="grpc://127.0.0.1:50061" />
+        </label>
+        <p class="control-hint">
+          <span>Connection options:</span><br />
+          - Choose <code>Local</code>, <code>AWS EC2</code>, or <code>AWS Fargate</code> to auto-fill the gateway URL.<br />
+          - Use <code>grpc://127.0.0.1:50051</code> for local market streaming.<br />
+          - Use <code>http://hft-loadbalancer-1038079046.us-east-2.elb.amazonaws.com</code> for the deployed AWS gateway.<br />
+          - Use <code>http://hft-fargate-alb-36714288.us-east-2.elb.amazonaws.com</code> for the deployed AWS Fargate gateway.<br />
+          - For direct Python inference, set <code>Prediction Target</code> to a gRPC endpoint such as <code>grpc://127.0.0.1:50061</code> or your AWS Python host.<br />
+          - Leave <code>Prediction Target</code> blank to use the gateway's <code>/predict</code> path.
+        </p>
         <div class="control-actions">
           <button id="connect-btn" class="btn btn-primary">Connect Stream</button>
           <button id="simulate-btn" class="btn btn-secondary">Use Simulated</button>
@@ -120,14 +142,13 @@
         <div class="sim-layout">
           <div class="sim-block">
             <p class="sim-block-title">Strategy Setup</p>
+            <p class="sim-block-caption">Tune the live decision thresholds used for prediction, adverse filtering, and trade entry.</p>
             <div class="sim-grid sim-grid-config">
               <label id="sim-model-wrap">
                 <span class="input-title">Model</span>
                 <select id="sim-model-select">
                   <option value="xgboost">XGBoost</option>
-                  <option value="lstm">LSTM</option>
-                  <option value="cnn">CNN</option>
-                  <option value="transformer">Transformer</option>
+                  <option value="lightgbm">LightGBM</option>
                 </select>
               </label>
               <label id="sim-config-wrap">
@@ -146,42 +167,74 @@
               <label id="sim-hold-wrap">
                 <span class="input-title">Hold (ms)</span>
                 <input id="sim-hold-ms-input" type="number" min="50" step="50" value="500" />
+                <span class="input-help">Position hold window before reevaluation.</span>
               </label>
               <label id="sim-horizon-wrap">
-                <span class="input-title">Prediction Horizon (sec)</span>
-                <input id="sim-horizon-input" type="number" min="1" step="1" value="30" />
+                <span class="input-title">Prediction Horizon (ms)</span>
+                <input id="sim-horizon-input" type="number" min="50" step="50" value="500" readonly />
+                <span class="input-help">Synced to hold time for the current strategy.</span>
               </label>
               <label id="sim-range-wrap">
                 <span class="input-title">Auto Range (sec)</span>
                 <input id="sim-range-input" type="number" min="10" step="1" value="60" />
+                <span class="input-help">Auto-trading session duration.</span>
               </label>
               <label id="sim-imbalance-wrap">
                 <span class="input-title">Imbalance Threshold</span>
-                <input id="sim-imbalance-input" type="number" min="0.01" max="1" step="0.01" value="0.2" />
+                <input id="sim-imbalance-input" type="number" min="0.001" max="1" step="0.001" value="0.2" />
+                <span class="input-help">Book imbalance trigger for MM risk and alpha confirmation. Fine step: 0.001.</span>
               </label>
               <label id="sim-adverse-wrap">
                 <span id="sim-adverse-title" class="input-title">Adverse Filter</span>
-                <input id="sim-adverse-input" type="number" min="0.00001" step="0.00001" value="0.0006" />
+                <input id="sim-adverse-input" type="number" min="0.000001" step="0.000001" value="0.00025" />
+                <span id="sim-adverse-help" class="input-help">Skip quotes when predicted return is too directional. Fine step: 0.000001.</span>
               </label>
               <label id="sim-min-spread-wrap">
                 <span class="input-title">Min Spread (bps)</span>
-                <input id="sim-min-spread-input" type="number" min="0.1" step="0.1" value="0.8" />
+                <input id="sim-min-spread-input" type="number" min="0.01" step="0.01" value="0.8" />
+                <span class="input-help">Minimum spread required before market-making can quote. Fine step: 0.01 bps.</span>
               </label>
+            </div>
+            <div class="sim-derived-panel">
+              <div class="sim-derived-head">Decision Rails</div>
+              <div class="sim-derived-grid">
+                <article class="sim-derived-card">
+                  <span class="sim-derived-label">MM One-Sided</span>
+                  <strong id="sim-mm-one-sided-value">-</strong>
+                </article>
+                <article class="sim-derived-card">
+                  <span class="sim-derived-label">Alpha Confirm</span>
+                  <strong id="sim-alpha-confirm-value">-</strong>
+                </article>
+                <article class="sim-derived-card">
+                  <span class="sim-derived-label">Max Entry Spread</span>
+                  <strong id="sim-max-entry-spread-value">-</strong>
+                </article>
+                <article class="sim-derived-card">
+                  <span class="sim-derived-label">Cooldown</span>
+                  <strong id="sim-alpha-cooldown-value">-</strong>
+                </article>
+              </div>
+              <p id="sim-decision-basis" class="sim-decision-basis">Decision gates will update when strategy parameters change.</p>
             </div>
           </div>
           <div class="sim-block">
             <p class="sim-block-title">Account & Execution</p>
+            <p class="sim-block-caption">Preview capital at risk, track equity, and control automated execution.</p>
             <div class="sim-grid sim-grid-exec">
               <label id="sim-account-wrap">
                 <span class="input-title">Account Balance (USD)</span>
                 <input id="sim-account-input" type="text" inputmode="decimal" value="20,000" />
+                <span class="input-help">Used to initialize and reset the simulated account.</span>
               </label>
               <label id="sim-capital-wrap">
                 <span class="input-title">Capital (USD)</span>
                 <input id="sim-capital-input" type="text" inputmode="decimal" value="5,000" />
+                <span class="input-help">Per-trade notional used for expected and realized PnL.</span>
               </label>
             </div>
             <div class="sim-actions">
+              <button id="sim-predict-btn" class="btn btn-secondary">Predict Now</button>
               <button id="sim-auto-start-btn" class="btn btn-primary">Start Auto</button>
               <button id="sim-auto-stop-btn" class="btn btn-ghost">Stop Auto</button>
               <button id="sim-account-reset-btn" class="btn btn-ghost">Reset Account</button>
@@ -191,12 +244,16 @@
         <div id="sim-summary" class="sim-summary">No prediction yet.</div>
         <div class="sim-metrics">
           <article class="card stat">
-            <p>Model Signal</p>
+            <p>Trade Signal</p>
             <h2 id="sim-signal">-</h2>
           </article>
           <article class="card stat">
             <p>Predicted Price</p>
             <h2 id="sim-pred-price">-</h2>
+          </article>
+          <article class="card stat">
+            <p>Signed Pred Return</p>
+            <h2 id="sim-pred-ret">-</h2>
           </article>
           <article class="card stat">
             <p>Expected PnL</p>

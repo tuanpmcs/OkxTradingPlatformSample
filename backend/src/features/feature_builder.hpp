@@ -6,7 +6,9 @@
 #include <cmath>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <limits>
+#include <map>
 #include <optional>
 #include <ostream>
 #include <string>
@@ -19,6 +21,7 @@ using DoubleType = double;
 struct FeatureRow
 {
 	std::string inst_id;
+	std::string book_action;
 
 	std::uint64_t book_ts{};
 	std::uint64_t book_recv_ts{};
@@ -63,7 +66,8 @@ inline std::ostream& operator<<(std::ostream& os, const FeatureRow& row)
 {
 	os
 		<< "FeatureRow{" << "inst_id=" << row.inst_id << ", book_ts=" << row.book_ts << ", seq_id="
-		<< row.book_seq_id << ", best_bid_px=" << row.best_bid_px << ", best_ask_px=" << row.best_ask_px
+		<< row.book_seq_id << ", book_action=" << row.book_action
+		<< ", best_bid_px=" << row.best_bid_px << ", best_ask_px=" << row.best_ask_px
 		<< ", mid_price=" << row.mid_price << ", spread=" << row.spread << ", microprice=" << row.microprice
 		<< ", imbalance_l1=" << row.imbalance_l1 << ", imbalance_l5=" << row.imbalance_l5
 		<< ", trade_count=" << row.trade_count << ", buy_count=" << row.buy_count
@@ -105,55 +109,12 @@ public:
 
 	std::optional<FeatureRow> on_books(const Books5& b)
 	{
-		if (!is_valid_book(b))
-		{
-			return std::nullopt;
-		}
-
-		const std::uint64_t now_ts = choose_book_time(b);
-		evict_old_trades(now_ts);
-
-		FeatureRow row{};
-		row.inst_id = b.instrument_id;
-		row.book_ts = b.exchange_ts_ms;
-		row.book_recv_ts = b.recv_ts_ms;
-		row.book_seq_id = b.sequence_id;
-
-		row.best_bid_px = to_scalar(b.bids[0].price);
-		row.best_ask_px = to_scalar(b.asks[0].price);
-		row.best_bid_sz = to_scalar(b.bids[0].quantity);
-		row.best_ask_sz = to_scalar(b.asks[0].quantity);
-
-		row.mid_price = compute_mid_price(b);
-		row.spread = compute_spread(b);
-		row.rel_spread = safe_div(row.spread, row.mid_price);
-		row.microprice = compute_microprice(b);
-		row.imbalance_l1 = compute_level_imbalance(b, 1);
-		row.imbalance_l5 = compute_level_imbalance(b, 5);
-		row.bid_vol_l5 = sum_bid_volume(b, 5);
-		row.ask_vol_l5 = sum_ask_volume(b, 5);
-		row.weighted_bid_depth = compute_weighted_bid_depth(b, 5);
-		row.weighted_ask_depth = compute_weighted_ask_depth(b, 5);
-
-		fill_trade_features(now_ts, row);
-
-		row.prev_mid_price = m_prev_mid_price.value_or(row.mid_price);
-		row.prev_spread = m_prev_spread.value_or(row.spread);
-		row.delta_mid_price = row.mid_price - row.prev_mid_price;
-		row.delta_spread = row.spread - row.prev_spread;
-		row.delta_imbalance_l5 = row.imbalance_l5 - m_prev_imbalance_l5.value_or(row.imbalance_l5);
-
-		m_prev_mid_price = row.mid_price;
-		m_prev_spread = row.spread;
-		m_prev_imbalance_l5 = row.imbalance_l5;
-		m_last_book = b;
-
-		return row;
+		return build_feature_row(b, b.action.empty() ? "snapshot" : b.action);
 	}
 
 	std::optional<FeatureRow> on_books(const Books& b)
 	{
-		if (b.bids.empty() || b.asks.empty())
+		if (b.bids.empty() && b.asks.empty())
 		{
 			return std::nullopt;
 		}
@@ -164,24 +125,28 @@ public:
 		b5.recv_ts_ms = b.recv_ts_ms;
 		b5.sequence_id = b.sequence_id;
 
-		const auto bid_levels = std::min<std::size_t>(5, b.bids.size());
-		const auto ask_levels = std::min<std::size_t>(5, b.asks.size());
-		for (std::size_t i = 0; i < bid_levels; ++i)
+		auto& state = m_books_by_inst[b.instrument_id];
+		b5.action = normalize_action(b.action, !state.bids.empty() || !state.asks.empty());
+		apply_books_update(state, b);
+		if (!materialize_top5(state, b5))
 		{
-			b5.bids[i] = b.bids[i];
-		}
-		for (std::size_t i = 0; i < ask_levels; ++i)
-		{
-			b5.asks[i] = b.asks[i];
+			return std::nullopt;
 		}
 
-		return on_books(b5);
+		return build_feature_row(b5, b5.action);
 	}
 
 private:
+	struct BookState
+	{
+		std::map<DoubleType, DoubleType, std::greater<DoubleType>> bids;
+		std::map<DoubleType, DoubleType> asks;
+	};
+
 	Config m_cfg;
 	std::deque<Trade> m_trades{};
 	std::optional<Books5> m_last_book{};
+	std::map<std::string, BookState> m_books_by_inst{};
 
 	std::optional<DoubleType> m_prev_mid_price{};
 	std::optional<DoubleType> m_prev_spread{};
@@ -191,9 +156,23 @@ private:
 	static constexpr DoubleType k_eps = 1e-12;
 
 private:
+	static std::string normalize_action(const std::string& action, bool has_state)
+	{
+		if (action == "snapshot" || action == "update")
+		{
+			return action;
+		}
+		return has_state ? "update" : "snapshot";
+	}
+
 	static DoubleType to_scalar(const ::DoubleType& value)
 	{
 		return value.convert_to<double>();
+	}
+
+	static ::DoubleType from_scalar(DoubleType value)
+	{
+		return ::DoubleType(value);
 	}
 
 	std::uint64_t choose_trade_time(const Trade& t) const
@@ -237,6 +216,144 @@ private:
 			return false;
 		}
 		return true;
+	}
+
+	static void apply_side_update(std::map<DoubleType, DoubleType, std::greater<DoubleType>>& side,
+								  const std::vector<Book>& levels)
+	{
+		for (const auto& level : levels)
+		{
+			const auto px = to_scalar(level.price);
+			const auto sz = to_scalar(level.quantity);
+			if (!(px > 0.0))
+			{
+				continue;
+			}
+			if (sz <= 0.0)
+			{
+				side.erase(px);
+			}
+			else
+			{
+				side[px] = sz;
+			}
+		}
+	}
+
+	static void apply_side_update(std::map<DoubleType, DoubleType>& side, const std::vector<Book>& levels)
+	{
+		for (const auto& level : levels)
+		{
+			const auto px = to_scalar(level.price);
+			const auto sz = to_scalar(level.quantity);
+			if (!(px > 0.0))
+			{
+				continue;
+			}
+			if (sz <= 0.0)
+			{
+				side.erase(px);
+			}
+			else
+			{
+				side[px] = sz;
+			}
+		}
+	}
+
+	static void apply_books_update(BookState& state, const Books& b)
+	{
+		const auto action = normalize_action(b.action, !state.bids.empty() || !state.asks.empty());
+		if (action == "snapshot")
+		{
+			state.bids.clear();
+			state.asks.clear();
+		}
+		apply_side_update(state.bids, b.bids);
+		apply_side_update(state.asks, b.asks);
+	}
+
+	static bool materialize_top5(const BookState& state, Books5& out)
+	{
+		if (state.bids.empty() || state.asks.empty())
+		{
+			return false;
+		}
+
+		std::size_t idx = 0;
+		for (const auto& [px, sz] : state.bids)
+		{
+			if (idx >= out.bids.size())
+			{
+				break;
+			}
+			out.bids[idx].price = from_scalar(px);
+			out.bids[idx].quantity = from_scalar(sz);
+			++idx;
+		}
+
+		idx = 0;
+		for (const auto& [px, sz] : state.asks)
+		{
+			if (idx >= out.asks.size())
+			{
+				break;
+			}
+			out.asks[idx].price = from_scalar(px);
+			out.asks[idx].quantity = from_scalar(sz);
+			++idx;
+		}
+
+		return true;
+	}
+
+	std::optional<FeatureRow> build_feature_row(const Books5& b, const std::string& action)
+	{
+		if (!is_valid_book(b))
+		{
+			return std::nullopt;
+		}
+
+		const std::uint64_t now_ts = choose_book_time(b);
+		evict_old_trades(now_ts);
+
+		FeatureRow row{};
+		row.inst_id = b.instrument_id;
+		row.book_action = normalize_action(action, m_last_book.has_value());
+		row.book_ts = b.exchange_ts_ms;
+		row.book_recv_ts = b.recv_ts_ms;
+		row.book_seq_id = b.sequence_id;
+
+		row.best_bid_px = to_scalar(b.bids[0].price);
+		row.best_ask_px = to_scalar(b.asks[0].price);
+		row.best_bid_sz = to_scalar(b.bids[0].quantity);
+		row.best_ask_sz = to_scalar(b.asks[0].quantity);
+
+		row.mid_price = compute_mid_price(b);
+		row.spread = compute_spread(b);
+		row.rel_spread = safe_div(row.spread, row.mid_price);
+		row.microprice = compute_microprice(b);
+		row.imbalance_l1 = compute_level_imbalance(b, 1);
+		row.imbalance_l5 = compute_level_imbalance(b, 5);
+		row.bid_vol_l5 = sum_bid_volume(b, 5);
+		row.ask_vol_l5 = sum_ask_volume(b, 5);
+		row.weighted_bid_depth = compute_weighted_bid_depth(b, 5);
+		row.weighted_ask_depth = compute_weighted_ask_depth(b, 5);
+
+		fill_trade_features(now_ts, row);
+
+		row.prev_mid_price = m_prev_mid_price.value_or(row.mid_price);
+		row.prev_spread = m_prev_spread.value_or(row.spread);
+		row.delta_mid_price = row.mid_price - row.prev_mid_price;
+		row.delta_spread = row.spread - row.prev_spread;
+		row.delta_imbalance_l5 = row.imbalance_l5 - m_prev_imbalance_l5.value_or(row.imbalance_l5);
+
+		m_prev_mid_price = row.mid_price;
+		m_prev_spread = row.spread;
+		m_prev_imbalance_l5 = row.imbalance_l5;
+		m_last_book = b;
+
+		return row;
 	}
 
 	static DoubleType safe_div(DoubleType num, DoubleType den)
